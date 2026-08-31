@@ -64,3 +64,4 @@ pip-delete-this-directory.txt
 autohelper
 working_images/
 debug_frames/
+pyappify_dist/
