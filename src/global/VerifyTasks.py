@@ -157,6 +157,13 @@ class RunCrewDeck(_SingleDailyFlow):
     label = 'Crew Deck'
 
 
+class RunBossFight(_SingleWeeklyFlow):
+    """Spends the remaining Boss Fight attempts through the game's own Auto Mode. Costs Expenditure."""
+
+    flow = 'boss_fight'
+    label = 'Boss Fight'
+
+
 class RunPeakValue(_SingleWeeklyFlow):
     """Collects the Peak Value Assessment rewards."""
 

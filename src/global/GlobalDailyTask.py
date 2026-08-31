@@ -37,10 +37,6 @@ PART_NUMBER = re.compile(r'Part\s*(\d+)', re.I)
 # The cards sit at opposite ends of the page, two thirds of the frame apart, so a span wide enough to take
 # in a whole card still reaches nowhere near its neighbour.
 CARD_SPREAD = 0.25
-# Anchored so it cannot match the "Auto Mode Preparation" dialog title that follows it.
-AUTO = re.compile(r'^Auto$', re.I)
-AUTO_DIALOG = re.compile(r'Number of Auto Battles', re.I)
-ITEMS_OBTAINED = re.compile(r'Items Obtained', re.I)
 
 # Event tickets, in the top-right corner of the event page. Every event puts the count in the same spot
 # and none of them labels it, so it is found by position. The band stops above the event's own name,
@@ -61,14 +57,6 @@ TICKETS_ZOOM = 6
 # because this page fades in over a second or more: an arrival check once matched its first word and the
 # ticket corner was read 18ms later, while the event's own name was still materialising a letter at a time.
 EVENT_PAGE_DRAW_PAUSE = 3
-# What the end of a run of auto battles can look like. The reward summary is the expected outcome, but
-# the click-anywhere overlay is what actually blocks progress, and it is not always preceded by a title
-# the poll can see - so either one counts as done.
-BATTLES_DONE = [ITEMS_OBTAINED, CLICK_ANYWHERE]
-
-# Sets the battle count to the most the remaining Expenditure allows. Unlabelled, so clicked by position.
-MAX_BATTLES = (0.653, 0.518)
-
 # Stage nodes sit in a horizontal band across the middle of the Supply map. Scanning a band rather than
 # the whole frame keeps the repeated scroll-and-look cheap.
 STAGE_BAND = (0.0, 0.38, 1.0, 0.62)
@@ -752,22 +740,8 @@ class GlobalDailyTask(BaseGlobalTask):
             return self.stop_flow('Found no Supply stages on the map, skipping.')
         self.log_info(f'running event supply stage {stage.name}')
         self.click(stage)
-        if not self.wait_click_ocr(match=AUTO, box=self.box.bottom_right, time_out=5):
-            return self.stop_flow('Found no Auto button on the stage panel, skipping.')
-        if not self.wait_ocr(match=AUTO_DIALOG, box=self.box.center, time_out=5):
-            return self.stop_flow('The Auto Mode dialog did not open, skipping.')
-        # Take the maximum the remaining Expenditure allows. Missing this button costs a smaller run,
-        # not a wrong one, so it is not worth failing over.
-        self.click_relative(*MAX_BATTLES, after_sleep=1)
-        if not self.wait_click_ocr(match=CONFIRM, box=self.box.center, time_out=5):
-            return self.stop_flow('Could not confirm the auto battles, skipping.')
-        # Whole frame rather than a region: the summary title sits at the top and the overlay prompt at
-        # the bottom, and either can be the thing on screen when the battles end.
-        if self.poll_ocr(BATTLES_DONE, time_out=EVENT_BATTLE_TIME_OUT, interval=5):
-            self.log_info('auto battles finished, clearing the reward screens')
-            self.wait_pop_up(time_out=20, count=4)
-        else:
-            self.log_info(f'Auto battles did not finish within {EVENT_BATTLE_TIME_OUT}s.', notify=True)
+        if not self.run_auto_battles(EVENT_BATTLE_TIME_OUT):
+            return self.stop_flow('Could not run the Supply auto battles, skipping.', dump='event_supply_auto_battles')
         self.go_home()
 
     def no_event_tickets(self):

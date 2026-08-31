@@ -1620,6 +1620,227 @@ class TestPeakValueRewards(unittest.TestCase):
         self.assertFalse(screen.open_periodic_returns())
 
 
+_MAX_BATTLES = importlib.import_module('src.global.BaseGlobalTask').MAX_BATTLES
+
+
+class _BossFight:
+    """A stand-in for the weekly task, scripted with the attempts the rail shows and how far the flow can get.
+
+    Borrows the real method for the same reason `_PeakValue` does. The Auto Mode dialog is a shared helper with tests of its own below, so it is scripted
+    here as a single outcome rather than replayed press by press. Coordinates come from a real 1920x1080 capture of the rail and its card.
+    """
+
+    def __init__(self, attempts=(0, 3), has_card_button=True, battles=True):
+        self.attempts = attempts
+        self.has_card_button = has_card_button
+        self.battles = battles
+        self.actions = []
+        self.logged = []
+        self.dumped = []
+        self.stopped = None
+        self.went_home = False
+        self.box = types.SimpleNamespace(left=None, bottom_right=None)
+
+    def boss_fight(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        return weekly.GlobalWeeklyTask.boss_fight(self)
+
+    def info_set(self, key, value):
+        pass
+
+    def open_regular_commissions(self):
+        self.actions.append('commissions')
+        return True
+
+    def ocr(self, **kwargs):
+        return []
+
+    def read_counter_under(self, label, boxes=None, **kwargs):
+        return self.attempts
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('rail')
+        return Box(66, 250, 290, 80, name='Boss Fight')
+
+    def click_card_button(self, title, button, **kwargs):
+        if not self.has_card_button:
+            return None
+        self.actions.append('proceed')
+        return Box(1600, 362, 250, 45, name='Proceed')
+
+    def run_auto_battles(self, time_out):
+        self.actions.append(('auto battles', time_out))
+        return self.battles
+
+    def go_home(self):
+        self.went_home = True
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def dump_screen(self, label):
+        self.dumped.append(label)
+
+    def stop_flow(self, message, dump=None):
+        self.stopped = message
+        if dump:
+            self.dumped.append(dump)
+        return False
+
+
+class TestBossFight(unittest.TestCase):
+    """Boss Fight spends its attempts through Auto Mode, so nothing here fights anything by hand.
+
+    The rail entry and the card header say different things, which is what decides how the mode gets named on that screen.
+    """
+
+    def test_the_rail_entry_is_what_names_the_card(self):
+        """The card header reads `Standard Battle`, so the rail entry is the only text identifying this mode on that screen."""
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        self.assertTrue(weekly.BOSS_FIGHT.search('Boss Fight'))
+        self.assertIsNone(weekly.BOSS_FIGHT.search('Standard Battle'), 'the card header is not the rail entry')
+
+    def test_attempts_already_spent_stops_before_opening_the_mode(self):
+        """`Attempts: 3/3` means the week is done, and going in anyway would spend nothing but time."""
+        screen = _BossFight(attempts=(3, 3))
+        self.assertFalse(screen.boss_fight())
+        self.assertNotIn('proceed', screen.actions)
+        self.assertIn('3/3', screen.stopped)
+
+    def test_attempts_remaining_hand_over_to_auto_mode(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        screen = _BossFight(attempts=(0, 3))
+        screen.boss_fight()
+        self.assertEqual(['commissions', 'rail', 'proceed', ('auto battles', weekly.BOSS_BATTLE_TIME_OUT)], screen.actions)
+        self.assertTrue(screen.went_home)
+
+    def test_an_unreadable_counter_says_so_and_goes_on_to_look(self):
+        """A failed read is not a finished week, so it is reported as a read that failed and the flow carries on rather than claiming there is nothing to do."""
+        screen = _BossFight(attempts=None)
+        screen.boss_fight()
+        self.assertIsNone(screen.stopped)
+        self.assertIn('proceed', screen.actions)
+        self.assertTrue(screen.logged)
+        self.assertTrue(screen.dumped)
+
+    def test_no_card_stops_before_auto_mode(self):
+        screen = _BossFight(has_card_button=False)
+        self.assertFalse(screen.boss_fight())
+        self.assertTrue(all(action != 'auto battles' for action, *_ in screen.actions if isinstance(action, str)))
+        self.assertTrue(screen.dumped)
+
+    def test_auto_battles_that_do_not_run_stop_the_flow(self):
+        """Otherwise a run that spent nothing would be reported as a finished one."""
+        screen = _BossFight(battles=False)
+        self.assertFalse(screen.boss_fight())
+        self.assertIsNotNone(screen.stopped)
+        self.assertTrue(screen.dumped)
+
+
+class _AutoBattles:
+    """A stand-in for the base task, scripted with how far the Auto Mode dialog gets.
+
+    Records what each wait was asked for as well as that it happened, because which wait gets the battle budget is the whole point of the helper.
+    """
+
+    def __init__(self, has_auto=True, has_dialog=True, has_confirm=True, battles_end=True):
+        self.has_auto = has_auto
+        self.has_dialog = has_dialog
+        self.has_confirm = has_confirm
+        self.battles_end = battles_end
+        self.actions = []
+        self.logged = []
+        self.poll_time_out = None
+        self.pop_up_time_out = None
+        self.box = types.SimpleNamespace(bottom_right=None, center=None)
+
+    def run_auto_battles(self, time_out):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        return base.BaseGlobalTask.run_auto_battles(self, time_out)
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        if match is base.AUTO:
+            if not self.has_auto:
+                return None
+            self.actions.append('auto')
+            return Box(1283, 975, 185, 55, name='Auto')
+        if match is base.CONFIRM:
+            if not self.has_confirm:
+                return None
+            self.actions.append('confirm')
+            return Box(991, 743, 350, 60, name='Confirm')
+        return None
+
+    def wait_ocr(self, match=None, box=None, **kwargs):
+        if not self.has_dialog:
+            return []
+        self.actions.append('dialog')
+        return [Box(813, 500, 300, 40, name='Number of Auto Battles: 1')]
+
+    def click_relative(self, x, y, **kwargs):
+        self.actions.append(('max', x, y))
+
+    def poll_ocr(self, match, time_out=0, interval=0, **kwargs):
+        self.actions.append('poll')
+        self.poll_time_out = time_out
+        return [Box(0, 0, 10, 10, name='Items Obtained')] if self.battles_end else []
+
+    def wait_pop_up(self, time_out=0, count=0, **kwargs):
+        self.actions.append('overlays')
+        self.pop_up_time_out = time_out
+        return True
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+
+class TestAutoBattles(unittest.TestCase):
+    """The Auto Mode dialog, shared by the event Supply stages and Boss Fight.
+
+    The battles play out in real time, so the helper has to sit through them. `wait_pop_up` cannot do that: it gives each look `POP_UP_CHECK_TIME_OUT`
+    seconds and stops at the first that finds nothing, so a long budget handed to it is spent in about two seconds and the caller walks into a live fight.
+    """
+
+    def test_the_auto_button_is_not_matched_by_the_dialog_it_opens(self):
+        """Pressing Auto puts `Auto Mode Preparation` on screen, which an unanchored pattern matches just as readily as the button."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        self.assertTrue(base.AUTO.search('Auto'))
+        for other in ('Auto Mode Preparation', 'Auto Battle', 'Number of Auto Battles: 1'):
+            self.assertIsNone(base.AUTO.search(other), f'AUTO matches {other!r}, which is not the button')
+
+    def test_the_dialog_is_filled_in_before_it_is_confirmed(self):
+        """Confirming first would spend one attempt where the caller asked for all of them."""
+        screen = _AutoBattles()
+        self.assertTrue(screen.run_auto_battles(300))
+        self.assertEqual(['auto', 'dialog', ('max',) + _MAX_BATTLES, 'confirm', 'poll', 'overlays'], screen.actions)
+
+    def test_the_battle_budget_goes_to_the_poll_and_not_the_overlay_wait(self):
+        """`wait_pop_up` caps each look at two seconds and stops at the first empty one, so a run of battles handed to it is not waited for at all."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        screen = _AutoBattles()
+        screen.run_auto_battles(300)
+        self.assertEqual(300, screen.poll_time_out)
+        self.assertLess(screen.pop_up_time_out, 300)
+        self.assertGreater(screen.pop_up_time_out, base.POP_UP_CHECK_TIME_OUT)
+
+    def test_battles_that_never_finish_do_not_clear_overlays(self):
+        """There is nothing to clear, and saying so is what keeps the caller from reporting a run it never made."""
+        screen = _AutoBattles(battles_end=False)
+        self.assertFalse(screen.run_auto_battles(300))
+        self.assertNotIn('overlays', screen.actions)
+        self.assertTrue(screen.logged)
+
+    def test_each_missing_control_gives_up_rather_than_pressing_on(self):
+        """The max-attempts control is clicked by position, so carrying on without the dialog would click whatever is underneath those coordinates."""
+        for kwargs, missing in ((dict(has_auto=False), 'auto'), (dict(has_dialog=False), 'dialog'), (dict(has_confirm=False), 'confirm')):
+            with self.subTest(**kwargs):
+                screen = _AutoBattles(**kwargs)
+                self.assertFalse(screen.run_auto_battles(300))
+                self.assertNotIn(missing, screen.actions)
+                self.assertNotIn('poll', screen.actions)
+
+
 class TestGlobalFlowWiring(unittest.TestCase):
     """Static checks on the flow tables. No game, no OCR - these guard the wiring only."""
 
