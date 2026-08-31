@@ -54,6 +54,30 @@ jobs:
           lfs: true
           fetch-depth: 0
 
+      # pyappify seeds the offline installer by cloning git_url and checking out the newest release tag on the
+      # remote, so a release is only correct when the tag being built is that newest tag. Tagging after the build
+      # shipped a v2026.8.30 installer that held v2026.8.26 and updated itself on first launch.
+      - name: Check the tag will be the newest on origin
+        shell: pwsh
+        run: |
+          function Get-VersionKey($tag) {
+            # pyappify compares the parts as numbers rather than as text, so pad them into a key that sorts the same way.
+            return (($tag.TrimStart('v') -split '\.') | ForEach-Object { '{0:D6}' -f [int]$_ }) -join '.'
+          }
+          $refs = git ls-remote --tags origin 'refs/tags/v*'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "git ls-remote failed, cannot read the tags on origin."
+            exit 1
+          }
+          $names = @($refs) -replace '^\S+\s+refs/tags/', '' -replace '\^\{\}$', ''
+          $tagKey = Get-VersionKey $env:TAG
+          $newer = @($names | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and (Get-VersionKey $_) -ge $tagKey } | Sort-Object -Unique)
+          if ($newer) {
+            Write-Error "origin already has $($newer -join ', '), which outrank or match $env:TAG. Release a newer version."
+            exit 1
+          }
+          Write-Host "$env:TAG will be the newest tag on origin"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -96,6 +120,20 @@ jobs:
           Write-Host "pyappify.yml points at $expected"
           Get-Content pyappify.yml
 
+      # The tag goes up only once the tests have passed, but it has to be on origin before the build, since that
+      # is where the clone pyappify seeds the installer from will look for it.
+      - name: Create and push the tag
+        id: push_tag
+        shell: pwsh
+        run: |
+          $subject = (git log -1 --pretty=%s).Trim()
+          git tag -a $env:TAG -m "$subject" HEAD && git push origin $env:TAG
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Could not put $env:TAG on origin."
+            exit 1
+          }
+          Write-Host "Pushed $env:TAG at ${{ github.sha }}"
+
       # Does three jobs at once: writes the tag into src/config.py so the app reports its own version,
       # copies ok-script into the tree, and drops it from requirements.txt. The build needs all three.
       - name: inline_ok_requirements
@@ -128,3 +166,10 @@ jobs:
 
             Download an installer below. Do not download the source archives - they do not include the
             packaged dependencies.
+
+      # Deleting the tag here would race a re-run, so name the commands and leave the call to whoever is releasing.
+      - name: Say how to remove the tag if the release failed
+        if: failure() && steps.push_tag.outcome == 'success'
+        shell: pwsh
+        run: |
+          Write-Host "::warning::$env:TAG is on origin with no release behind it, and AUTO_UPDATE clients follow tags. Remove it with: git push --delete origin $env:TAG"
