@@ -44,7 +44,7 @@ class TestGlobalMain(TaskTestCase):
         boxes = self.task.ocr(box='right')
         names = [b.name for b in boxes]
         self.assertTrue(any(re.search('Recruitment', n, re.I) for n in names), f'expected English text, got {names}')
-        self.assertFalse(any('招募' in n for n in names), f'text was translated into Chinese: {names}')
+        self.assertFalse(any('æ‹›å‹Ÿ' in n for n in names), f'text was translated into Chinese: {names}')
 
     def press(self, method, found, **kwargs):
         """Run one press with the reads and the input stubbed out.
@@ -1618,6 +1618,113 @@ class TestPeakValueRewards(unittest.TestCase):
         """Rather than pressing on to a Claim All that is not there."""
         screen = _PeakValue(opens_itself=False, has_button=False)
         self.assertFalse(screen.open_periodic_returns())
+
+
+_MAX_BATTLES = importlib.import_module('src.global.BaseGlobalTask').MAX_BATTLES
+
+
+class _AutoBattles:
+    """A stand-in for the base task, scripted with how far the Auto Mode dialog gets.
+
+    Records what each wait was asked for as well as that it happened, because which wait gets the battle budget is the whole point of the helper.
+    """
+
+    def __init__(self, has_auto=True, has_dialog=True, has_confirm=True, battles_end=True):
+        self.has_auto = has_auto
+        self.has_dialog = has_dialog
+        self.has_confirm = has_confirm
+        self.battles_end = battles_end
+        self.actions = []
+        self.logged = []
+        self.poll_time_out = None
+        self.pop_up_time_out = None
+        self.box = types.SimpleNamespace(bottom_right=None, center=None)
+
+    def run_auto_battles(self, time_out):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        return base.BaseGlobalTask.run_auto_battles(self, time_out)
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        if match is base.AUTO:
+            if not self.has_auto:
+                return None
+            self.actions.append('auto')
+            return Box(1283, 975, 185, 55, name='Auto')
+        if match is base.CONFIRM:
+            if not self.has_confirm:
+                return None
+            self.actions.append('confirm')
+            return Box(991, 743, 350, 60, name='Confirm')
+        return None
+
+    def wait_ocr(self, match=None, box=None, **kwargs):
+        if not self.has_dialog:
+            return []
+        self.actions.append('dialog')
+        return [Box(813, 500, 300, 40, name='Number of Auto Battles: 1')]
+
+    def click_relative(self, x, y, **kwargs):
+        self.actions.append(('max', x, y))
+
+    def poll_ocr(self, match, time_out=0, interval=0, **kwargs):
+        self.actions.append('poll')
+        self.poll_time_out = time_out
+        return [Box(0, 0, 10, 10, name='Items Obtained')] if self.battles_end else []
+
+    def wait_pop_up(self, time_out=0, count=0, **kwargs):
+        self.actions.append('overlays')
+        self.pop_up_time_out = time_out
+        return True
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+
+class TestAutoBattles(unittest.TestCase):
+    """The Auto Mode dialog, shared by the event Supply stages and Boss Fight.
+
+    The battles play out in real time, so the helper has to sit through them. `wait_pop_up` cannot do that: it gives each look `POP_UP_CHECK_TIME_OUT`
+    seconds and stops at the first that finds nothing, so a long budget handed to it is spent in about two seconds and the caller walks into a live fight.
+    """
+
+    def test_the_auto_button_is_not_matched_by_the_dialog_it_opens(self):
+        """Pressing Auto puts `Auto Mode Preparation` on screen, which an unanchored pattern matches just as readily as the button."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        self.assertTrue(base.AUTO.search('Auto'))
+        for other in ('Auto Mode Preparation', 'Auto Battle', 'Number of Auto Battles: 1'):
+            self.assertIsNone(base.AUTO.search(other), f'AUTO matches {other!r}, which is not the button')
+
+    def test_the_dialog_is_filled_in_before_it_is_confirmed(self):
+        """Confirming first would spend one attempt where the caller asked for all of them."""
+        screen = _AutoBattles()
+        self.assertTrue(screen.run_auto_battles(300))
+        self.assertEqual(['auto', 'dialog', ('max',) + _MAX_BATTLES, 'confirm', 'poll', 'overlays'], screen.actions)
+
+    def test_the_battle_budget_goes_to_the_poll_and_not_the_overlay_wait(self):
+        """`wait_pop_up` caps each look at two seconds and stops at the first empty one, so a run of battles handed to it is not waited for at all."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        screen = _AutoBattles()
+        screen.run_auto_battles(300)
+        self.assertEqual(300, screen.poll_time_out)
+        self.assertLess(screen.pop_up_time_out, 300)
+        self.assertGreater(screen.pop_up_time_out, base.POP_UP_CHECK_TIME_OUT)
+
+    def test_battles_that_never_finish_do_not_clear_overlays(self):
+        """There is nothing to clear, and saying so is what keeps the caller from reporting a run it never made."""
+        screen = _AutoBattles(battles_end=False)
+        self.assertFalse(screen.run_auto_battles(300))
+        self.assertNotIn('overlays', screen.actions)
+        self.assertTrue(screen.logged)
+
+    def test_each_missing_control_gives_up_rather_than_pressing_on(self):
+        """The max-attempts control is clicked by position, so carrying on without the dialog would click whatever is underneath those coordinates."""
+        for kwargs, missing in ((dict(has_auto=False), 'auto'), (dict(has_dialog=False), 'dialog'), (dict(has_confirm=False), 'confirm')):
+            with self.subTest(**kwargs):
+                screen = _AutoBattles(**kwargs)
+                self.assertFalse(screen.run_auto_battles(300))
+                self.assertNotIn(missing, screen.actions)
+                self.assertNotIn('poll', screen.actions)
 
 
 class TestGlobalFlowWiring(unittest.TestCase):

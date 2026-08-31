@@ -31,6 +31,21 @@ PROCEED = re.compile(r'Proceed', re.I)
 CLAIM_ALL = re.compile(r'Claim All', re.I)
 DO_NOT_REMIND = re.compile(r'not remind|remind me', re.I)
 
+# The game's own Auto Mode, which plays a mode's remaining attempts out by itself. The event Supply stages and
+# Boss Fight both end in this same dialog, so its wording lives here rather than in either task module.
+# Anchored, because pressing Auto puts "Auto Mode Preparation" on screen and an unanchored pattern would then
+# match the title of the dialog it just opened rather than the button.
+AUTO = re.compile(r'^Auto$', re.I)
+AUTO_DIALOG = re.compile(r'Number of Auto Battles', re.I)
+ITEMS_OBTAINED = re.compile(r'Items Obtained', re.I)
+# Sets the battle count to the most the remaining Expenditure allows. Unlabelled, so clicked by position.
+MAX_BATTLES = (0.653, 0.518)
+
+# What the end of a run of auto battles can look like. The reward summary is the expected outcome, but the
+# click-anywhere overlay is what actually blocks progress, and it is not always preceded by a title the poll
+# can see - so either one counts as done.
+BATTLES_DONE = [ITEMS_OBTAINED, CLICK_ANYWHERE]
+
 # Dismissable overlays that sit on top of whatever screen we actually want.
 POP_UPS = [
     CLICK_ANYWHERE,
@@ -614,6 +629,45 @@ class BaseGlobalTask(BaseGfTask):
         crop = frame[band.y:band.y + band.height, band.x:band.x + band.width]
         enlarged = cv2.resize(crop, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_CUBIC)
         return [box.name for box in self.ocr(frame=enlarged, log=True)]
+
+    def run_auto_battles(self, time_out):
+        """Spend the attempts on the screen that is up through the game's own Auto Mode.
+
+        The event Supply stages and Boss Fight both end here: Auto in the bottom right opens a dialog, the unlabelled control on its right fills in the most
+        attempts the remaining Expenditure allows, and Confirm commits them.
+
+        The battles then play out in real time, which is why the end of them is polled for rather than waited on. `wait_pop_up` cannot do that job - it gives
+        each look two seconds and stops at the first one that finds nothing, so asking it to sit through a run of battles returns straight away and leaves
+        the caller pressing buttons into a live fight.
+
+        Args:
+            time_out: Seconds to let the battles run before giving up on them.
+
+        Returns:
+            True once the battles have run and their reward screens have been cleared.
+        """
+        if not self.wait_click_ocr(match=AUTO, box=self.box.bottom_right, time_out=5):
+            self.log_info('found no Auto button on this screen')
+            return False
+        if not self.wait_ocr(match=AUTO_DIALOG, box=self.box.center, time_out=5):
+            self.log_info('the Auto Mode dialog did not open')
+            return False
+        # Take the maximum the remaining Expenditure allows. Missing this button costs a smaller run, not a
+        # wrong one, so it is not worth failing over. Nothing waits on it either, because it only changes a
+        # number on a dialog that is already up.
+        self.click_relative(*MAX_BATTLES, after_sleep=1)
+        if not self.wait_click_ocr(match=CONFIRM, box=self.box.center, time_out=5):
+            self.log_info('could not confirm the auto battles')
+            return False
+        # Whole frame rather than a region: the summary title sits at the top and the overlay prompt at the
+        # bottom, and either can be the thing on screen when the battles end.
+        if not self.poll_ocr(BATTLES_DONE, time_out=time_out, interval=5):
+            self.log_info(f'auto battles did not finish within {time_out}s')
+            return False
+        self.log_info('auto battles finished, clearing the reward screens')
+        # A multi-battle run stacks several reward screens, so this clears more than one.
+        self.wait_pop_up(time_out=20, count=4)
+        return True
 
     def open_regular_commissions(self):
         """Navigate home -> Commissions -> Regular Commissions.
