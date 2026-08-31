@@ -6,6 +6,7 @@
 #   .\local_release.ps1 -Version 2026.8.26
 #
 # Needs git, Node, pnpm, a Rust MSVC toolchain with the VS C++ build tools, and Python 3.12 on PATH.
+# Run it from an elevated PowerShell, since building the offline package runs the launcher as administrator.
 
 [CmdletBinding()]
 param(
@@ -77,6 +78,15 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 $Tag = "v$Version"
 Write-Host "    Releasing as $Tag"
+
+# The offline package is produced by running the freshly built launcher, whose manifest is requireAdministrator
+# because pyappify.yml sets uac: true. From an ordinary shell that spawn fails with EACCES, and it fails late,
+# once the tag has already gone out. CI never sees this because Actions runners are already elevated.
+Write-Step 'Checking the shell is elevated'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Run this from an elevated PowerShell. Building the offline package runs the launcher, which requires administrator.'
+}
 
 Write-Step 'Checking the toolchain'
 foreach ($tool in 'git', 'node', 'pnpm', 'cargo', 'python') {
