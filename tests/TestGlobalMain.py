@@ -44,7 +44,7 @@ class TestGlobalMain(TaskTestCase):
         boxes = self.task.ocr(box='right')
         names = [b.name for b in boxes]
         self.assertTrue(any(re.search('Recruitment', n, re.I) for n in names), f'expected English text, got {names}')
-        self.assertFalse(any('æ‹›å‹Ÿ' in n for n in names), f'text was translated into Chinese: {names}')
+        self.assertFalse(any('招募' in n for n in names), f'text was translated into Chinese: {names}')
 
     def press(self, method, found, **kwargs):
         """Run one press with the reads and the input stubbed out.
@@ -1621,6 +1621,120 @@ class TestPeakValueRewards(unittest.TestCase):
 
 
 _MAX_BATTLES = importlib.import_module('src.global.BaseGlobalTask').MAX_BATTLES
+
+
+class _BossFight:
+    """A stand-in for the weekly task, scripted with the attempts the rail shows and how far the flow can get.
+
+    Borrows the real method for the same reason `_PeakValue` does. The Auto Mode dialog is a shared helper with tests of its own below, so it is scripted
+    here as a single outcome rather than replayed press by press. Coordinates come from a real 1920x1080 capture of the rail and its card.
+    """
+
+    def __init__(self, attempts=(0, 3), has_card_button=True, battles=True):
+        self.attempts = attempts
+        self.has_card_button = has_card_button
+        self.battles = battles
+        self.actions = []
+        self.logged = []
+        self.dumped = []
+        self.stopped = None
+        self.went_home = False
+        self.box = types.SimpleNamespace(left=None, bottom_right=None)
+
+    def boss_fight(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        return weekly.GlobalWeeklyTask.boss_fight(self)
+
+    def info_set(self, key, value):
+        pass
+
+    def open_regular_commissions(self):
+        self.actions.append('commissions')
+        return True
+
+    def ocr(self, **kwargs):
+        return []
+
+    def read_counter_under(self, label, boxes=None, **kwargs):
+        return self.attempts
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('rail')
+        return Box(66, 250, 290, 80, name='Boss Fight')
+
+    def click_card_button(self, title, button, **kwargs):
+        if not self.has_card_button:
+            return None
+        self.actions.append('proceed')
+        return Box(1600, 362, 250, 45, name='Proceed')
+
+    def run_auto_battles(self, time_out):
+        self.actions.append(('auto battles', time_out))
+        return self.battles
+
+    def go_home(self):
+        self.went_home = True
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def dump_screen(self, label):
+        self.dumped.append(label)
+
+    def stop_flow(self, message, dump=None):
+        self.stopped = message
+        if dump:
+            self.dumped.append(dump)
+        return False
+
+
+class TestBossFight(unittest.TestCase):
+    """Boss Fight spends its attempts through Auto Mode, so nothing here fights anything by hand.
+
+    The rail entry and the card header say different things, which is what decides how the mode gets named on that screen.
+    """
+
+    def test_the_rail_entry_is_what_names_the_card(self):
+        """The card header reads `Standard Battle`, so the rail entry is the only text identifying this mode on that screen."""
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        self.assertTrue(weekly.BOSS_FIGHT.search('Boss Fight'))
+        self.assertIsNone(weekly.BOSS_FIGHT.search('Standard Battle'), 'the card header is not the rail entry')
+
+    def test_attempts_already_spent_stops_before_opening_the_mode(self):
+        """`Attempts: 3/3` means the week is done, and going in anyway would spend nothing but time."""
+        screen = _BossFight(attempts=(3, 3))
+        self.assertFalse(screen.boss_fight())
+        self.assertNotIn('proceed', screen.actions)
+        self.assertIn('3/3', screen.stopped)
+
+    def test_attempts_remaining_hand_over_to_auto_mode(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        screen = _BossFight(attempts=(0, 3))
+        screen.boss_fight()
+        self.assertEqual(['commissions', 'rail', 'proceed', ('auto battles', weekly.BOSS_BATTLE_TIME_OUT)], screen.actions)
+        self.assertTrue(screen.went_home)
+
+    def test_an_unreadable_counter_says_so_and_goes_on_to_look(self):
+        """A failed read is not a finished week, so it is reported as a read that failed and the flow carries on rather than claiming there is nothing to do."""
+        screen = _BossFight(attempts=None)
+        screen.boss_fight()
+        self.assertIsNone(screen.stopped)
+        self.assertIn('proceed', screen.actions)
+        self.assertTrue(screen.logged)
+        self.assertTrue(screen.dumped)
+
+    def test_no_card_stops_before_auto_mode(self):
+        screen = _BossFight(has_card_button=False)
+        self.assertFalse(screen.boss_fight())
+        self.assertTrue(all(action != 'auto battles' for action, *_ in screen.actions if isinstance(action, str)))
+        self.assertTrue(screen.dumped)
+
+    def test_auto_battles_that_do_not_run_stop_the_flow(self):
+        """Otherwise a run that spent nothing would be reported as a finished one."""
+        screen = _BossFight(battles=False)
+        self.assertFalse(screen.boss_fight())
+        self.assertIsNotNone(screen.stopped)
+        self.assertTrue(screen.dumped)
 
 
 class _AutoBattles:

@@ -2,6 +2,14 @@ import re
 
 from .BaseGlobalTask import CLAIM_ALL, PROCEED, BaseGlobalTask
 
+# Left rail of Regular Commissions. The card this opens is headed "Standard Battle", so the rail entry is
+# the only text on that screen naming the mode, and it carries the "Attempts: n/3" tally as well.
+BOSS_FIGHT = re.compile(r'Boss Fight', re.I)
+
+# How long to let the three attempts play out. Shorter than the event Supply budget because Boss Fight is
+# capped at three battles where an event run can be many. A guess until a real run says otherwise.
+BOSS_BATTLE_TIME_OUT = 300
+
 # Left rail of Regular Commissions. Peak Value Assessment wraps onto two lines there, so it is matched
 # on the distinctive first two words rather than the full name.
 PEAK_VALUE = re.compile(r'Peak Value', re.I)
@@ -24,6 +32,8 @@ PERIODIC_POPUP_TIME_OUT = 8
 
 # The flows this task performs: (config key, method, settings text). See `GlobalDailyTask.FLOWS`.
 FLOWS = (
+    ('Run Boss Fight', 'boss_fight',
+     'Spends every remaining Boss Fight attempt through Auto Mode, which costs Expenditure. Does not fight anything by hand.'),
     ('Claim Peak Value Rewards', 'claim_peak_value',
      'Collects the rewards from Peak Value Assessment. Does not fight anything.'),
 )
@@ -32,7 +42,7 @@ FLOWS = (
 class GlobalWeeklyTask(BaseGlobalTask):
     """Weekly modes on the Global client that the in-game Loop does not cover.
 
-    Only the claim side of Peak Value Assessment so far. Boss Fight and Expansion Drills need an English `auto_battle`, which does not exist yet.
+    Boss Fight spends its attempts through the game's own Auto Mode, so neither flow here needs combat handling. Expansion Drills is not covered yet.
     """
 
     def __init__(self, *args, **kwargs):
@@ -44,13 +54,41 @@ class GlobalWeeklyTask(BaseGlobalTask):
         """
         super().__init__(*args, **kwargs)
         self.name = 'Global Weekly'
-        self.description = 'Collects the Peak Value Assessment rewards.'
+        self.description = 'Runs Boss Fight and collects the Peak Value Assessment rewards.'
         self.support_schedule_task = True
         self.register_flows(FLOWS)
 
     def run(self):
         """Run every enabled weekly flow, in the order `FLOWS` lists them."""
         self.run_flows(FLOWS, 'Global Weekly complete.')
+
+    def boss_fight(self):
+        """Spend every remaining Boss Fight attempt through the game's own Auto Mode.
+
+        The attempts tally sits on the rail entry rather than on the card, so whether there is anything left to run is known before the mode is opened at all.
+        Auto Mode does the fighting, so this spends attempts but never plays a battle itself.
+        """
+        self.info_set('current_task', 'boss_fight')
+        if not self.open_regular_commissions():
+            return self.stop_flow('Could not open Regular Commissions, skipping Boss Fight.')
+        if not self.wait_click_ocr(match=BOSS_FIGHT, box=self.box.left, time_out=5, after_sleep=2):
+            return self.stop_flow('Boss Fight is not available, skipping.')
+        # One read of the screen, used for both the tally and the Proceed on the card it brought up. Nothing is
+        # clicked between them, so it is the same pixels either way.
+        card = self.ocr(log=True)
+        attempts = self.read_counter_under(BOSS_FIGHT, boxes=card)
+        if attempts is None:
+            # Said out loud rather than passed over, so a failed read does not get reported as a game state.
+            self.log_info('Could not read the Boss Fight attempts, so going on to look.')
+            self.dump_screen('boss_fight_attempts_unreadable')
+        elif attempts[0] >= attempts[1]:
+            return self.stop_flow(f'Boss Fight attempts are already at {attempts[0]}/{attempts[1]}, nothing to run.')
+        # No sleep: the wait for the Auto button below covers this screen loading.
+        if not self.click_card_button(BOSS_FIGHT, PROCEED, after_sleep=0, boxes=card):
+            return self.stop_flow('Found no Boss Fight card to open, skipping.', dump='boss_fight_no_card')
+        if not self.run_auto_battles(BOSS_BATTLE_TIME_OUT):
+            return self.stop_flow('Could not run the Boss Fight auto battles.', dump='boss_fight_auto_battles')
+        self.go_home()
 
     def claim_peak_value(self):
         """Collect the Peak Value Assessment rewards.
