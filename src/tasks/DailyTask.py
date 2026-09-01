@@ -99,7 +99,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             '吃饭': '1.0',
             "社区每日": False,
             '邮件': True,
-            '情报/战前补给': False,
+            '情报和战前补给': True,
             '闪耀星愿': False,
             '活动自律': True,
             '活动层': True,
@@ -154,7 +154,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
                 time_out=90
             )),
             ('邮件', self.mail),
-            ('情报/战前补给', self.activities),
+            ('情报和战前补给', self.activities),
             ('活动自律', self.activity),
             ('活动层', self.free_time_layer),
             ('公共区/调度室', self.gongongqu),
