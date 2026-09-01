@@ -60,7 +60,7 @@ class GlobalWeeklyTask(BaseGlobalTask):
 
     def run(self):
         """Run every enabled weekly flow, in the order `FLOWS` lists them."""
-        self.run_flows(FLOWS, 'Global Weekly complete.')
+        self.run_flows(FLOWS, 'Global Weekly')
 
     def boss_fight(self):
         """Spend every remaining Boss Fight attempt through the game's own Auto Mode.

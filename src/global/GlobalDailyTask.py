@@ -81,8 +81,6 @@ FLOWS = (
     # Supply auto-battles as well. Running this last spent the day's buffs on nothing.
     ('Crew Deck', 'crew_deck',
      'Visits the Crew Deck stations - Tea Time at the coffee machine, Delicious Cuisine at the kitchen. Walks there on a timer, so the walk settings below may need adjusting.'),
-    ('Start Loop', 'start_loop',
-     'Opens the Dispatch Room and starts the in-game Loop automation, then waits for it to finish.'),
     ('Claim Free Packs', 'shopping',
      'Claims the shop supply boxes that are currently free.'),
     ('Buy Wishlist Items', 'buy_wishlist',
@@ -91,6 +89,11 @@ FLOWS = (
      'Auto-battles the last Supply stage of each running event, spending as much Expenditure as it can. Which home screen banners to open is set below.'),
     ('Claim Boundary Push Rewards', 'claim_boundary_push',
      'Collects the Breakthrough rewards under Commissions.'),
+    # Last, because it is the only flow that parks the run - up to `LOOP_TIME_OUT` seconds watching a static
+    # screen. Everything above it takes seconds and is done before the wait rather than behind it, so a run
+    # stopped part way through, or one whose Loop ends somewhere unexpected, has already claimed the day.
+    ('Start Loop', 'start_loop',
+     'Opens the Dispatch Room and starts the in-game Loop automation, then waits for it to finish.'),
 )
 
 # Flows that stay switched off until they are asked for. Buy Wishlist Items because it is the only flow
@@ -488,7 +491,7 @@ class GlobalDailyTask(BaseGlobalTask):
 
     def run(self):
         """Run every enabled daily flow, in the order `FLOWS` lists them."""
-        self.run_flows(FLOWS, 'Global Daily complete.')
+        self.run_flows(FLOWS, 'Global Daily')
 
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # //////////////////////////////////////////////////////////////////////////////////////////////////

@@ -1547,6 +1547,145 @@ class TestFlowOrder(unittest.TestCase):
         daily = importlib.import_module('src.global.GlobalDailyTask')
         self.assertNotIn('Crew Deck', daily.FLOWS_OFF_BY_DEFAULT)
 
+    def test_the_loop_runs_last(self):
+        """It parks the run for up to `LOOP_TIME_OUT` seconds, and everything behind it waited that out for no reason."""
+        self.assertEqual('Start Loop', self.order()[-1], 'Start Loop waits out the whole in-game Loop, so nothing should be queued behind it')
+
+
+# A flow table naming methods on `_Flows` rather than real ones, so the runner can be exercised without any of the navigation the real flows do.
+ISOLATION_FLOWS = (
+    ('One', 'one', ''),
+    ('Two', 'two', ''),
+    ('Three', 'three', ''),
+)
+
+
+class _Flows:
+    """A stand-in task for `run_flows`, scripted with which flows raise and which toggles are off."""
+
+    def __init__(self, raises=None, off=(), at_home=False):
+        """Build the stand-in.
+
+        Args:
+            raises: Config key to the exception that flow should raise.
+            off: Config keys whose toggles are switched off.
+            at_home: Whether the home screen is showing when a flow raises.
+        """
+        self.raises = raises or {}
+        self.config = {key: key not in off for key, _, _ in ISOLATION_FLOWS}
+        self.at_home = at_home
+        self.ran = []
+        self.logged = []
+        self.errors = []
+        self.recovered = 0
+
+    def one(self):
+        self.flow_ran('One')
+
+    def two(self):
+        self.flow_ran('Two')
+
+    def three(self):
+        self.flow_ran('Three')
+
+    def flow_ran(self, key):
+        """Record that a flow ran, and raise on its behalf if it was scripted to.
+
+        Args:
+            key: The flow's config key.
+
+        Raises:
+            Exception: Whatever `raises` holds for this flow.
+        """
+        self.ran.append(key)
+        if key in self.raises:
+            raise self.raises[key]
+
+    def ensure_main(self, recheck_time=1, time_out=30):
+        pass
+
+    def is_main(self, esc=True):
+        return self.at_home
+
+    def go_home(self):
+        self.recovered += 1
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def log_error(self, message, exception=None, notify=False):
+        self.errors.append(message)
+
+
+class TestFlowIsolation(unittest.TestCase):
+    """A flow that raises should cost its own flow, not every flow behind it.
+
+    The daily runs its flows back to back off one table, and with no handling around them the first raise ended the run where it stood.
+    """
+
+    def run_flows(self, task):
+        """Run `ISOLATION_FLOWS` against a stand-in task.
+
+        Args:
+            task: The `_Flows` stand-in to run.
+        """
+        BaseGlobalTask.run_flows(task, ISOLATION_FLOWS, 'Test run')
+
+    def test_a_flow_that_raises_does_not_take_the_rest_of_the_run_with_it(self):
+        task = _Flows(raises={'One': Exception('could not reach the home screen')})
+        self.run_flows(task)
+        self.assertEqual(['One', 'Two', 'Three'], task.ran)
+
+    def test_the_failure_is_reported(self):
+        """Silently carrying on would leave the run looking like a clean one that simply claimed nothing."""
+        task = _Flows(raises={'Two': Exception('could not reach the home screen')})
+        self.run_flows(task)
+        self.assertTrue(any('Two' in message for message in task.errors), f'nothing in {task.errors} names the flow that failed')
+
+    def test_the_screen_is_recovered_before_the_next_flow(self):
+        """The failed flow left the screen wherever it stopped, and the next one starts from the home screen."""
+        task = _Flows(raises={'One': Exception('could not reach the home screen')})
+        self.run_flows(task)
+        self.assertEqual(1, task.recovered)
+
+    def test_a_screen_that_is_already_home_is_left_alone(self):
+        """A flow can raise with the home screen up - one dropped OCR word does it - and pressing the home button there costs two clicks and their sleeps."""
+        task = _Flows(raises={'One': Exception('could not find the Shop')}, at_home=True)
+        self.run_flows(task)
+        self.assertEqual(0, task.recovered)
+
+    def test_the_finish_message_names_the_flows_that_stopped_early(self):
+        """A run that says it is complete when two of its flows never happened is the report that hid this in the first place."""
+        task = _Flows(raises={'One': Exception('boom'), 'Three': Exception('boom')})
+        self.run_flows(task)
+        self.assertIn('One', task.logged[-1])
+        self.assertIn('Three', task.logged[-1])
+        self.assertNotIn('Two', task.logged[-1])
+
+    def test_a_clean_run_says_only_that_it_finished(self):
+        task = _Flows()
+        self.run_flows(task)
+        self.assertEqual(['Test run complete.'], task.logged)
+        self.assertEqual([], task.errors)
+
+    def test_a_flow_that_is_switched_off_is_still_skipped(self):
+        task = _Flows(off=('Two',))
+        self.run_flows(task)
+        self.assertEqual(['One', 'Three'], task.ran)
+
+    def test_a_stop_request_still_ends_the_run(self):
+        """Stopping the task, the app quitting, and losing the game window are all reasons there is no next flow to move on to.
+
+        Read off `STOP_THE_RUN` rather than restated, so anything added to it is covered here without the list having to be kept in step by hand.
+        """
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        self.assertTrue(base.STOP_THE_RUN, 'nothing is being let through to the executor')
+        for error_class in base.STOP_THE_RUN:
+            task = _Flows(raises={'One': error_class('the run is over')})
+            with self.assertRaises(error_class, msg=f'{error_class.__name__} should end the run rather than being stepped over'):
+                self.run_flows(task)
+            self.assertEqual(['One'], task.ran)
+
 
 class _PeakValue:
     """A stand-in for the weekly task, scripted with whether the popup opens itself.

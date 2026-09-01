@@ -59,7 +59,11 @@ class _SingleFlow:
         self.support_schedule_task = False
 
     def run(self):
-        """Run the one flow this task exists for, starting from the home screen."""
+        """Run the one flow this task exists for, starting from the home screen.
+
+        Deliberately not `run_flows`, which steps over a flow that raises so the flows behind it still get a turn. There is nothing behind this one, and these
+        tasks exist to show a failure rather than absorb it - the raise has to reach the executor, which is what puts the error and its screenshot on screen.
+        """
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
         getattr(self, self.flow)()
         self.log_info(f'{self.label} finished.', notify=True)
