@@ -491,7 +491,7 @@ class BaseGlobalTask(BaseGfTask):
         checks = 0
         # Start responsive and back off. Some of these waits end almost immediately - an auto battle
         # sweep resolves in seconds - and a fixed long interval would sit through that for no reason,
-        # while a fixed short one would be wasteful across the ten minutes a Loop can take.
+        # while a fixed short one would be wasteful across the many minutes a Loop can take.
         wait = POLL_MIN_INTERVAL
         while time.time() < deadline:
             if found := self.ocr(match=match, box=box):
