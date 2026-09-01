@@ -33,7 +33,7 @@ def widen_settings_text_column():
         logger.info('OK_GF2_NO_LAYOUT_PATCH set, leaving the stock layout alone')
         return
     try:
-        from ok.gui.tasks.LabelAndWidget import LabelAndWidget
+        from ok.ui.qt.tasks.LabelAndWidget import LabelAndWidget
     except ImportError:
         logger.warning('could not import LabelAndWidget, skipping settings layout patch')
         return
@@ -121,6 +121,42 @@ def size_cards_by_height_for_width():
     logger.info('expandable cards sized by height-for-width')
 
 
+def align_card_action_buttons():
+    """Keep a card's action buttons in one column down the list.
+
+    A card header ends with `[buttons][spacing][expand chevron][spacing]`, and ok-script hides the
+    chevron on cards with no config to expand. Qt gives a hidden widget no space, but the spacers
+    around it stay, so those rows push their buttons 30px further right than the rest and the list
+    ends up with a ragged right edge. Reserving the hidden chevron's space lines them all up.
+
+    This covers the task rows and, through `GlobalConfigCard`, the settings cards as well. The patch
+    does nothing once a future ok-script release stops hiding the button.
+    """
+    if os.environ.get('OK_GF2_NO_LAYOUT_PATCH'):
+        return
+    try:
+        from ok.ui.qt.tasks.ConfigCard import ConfigCard
+        # Grabbed inside the guard because it is a private method. A rename in ok-script should skip
+        # the patch like a moved module does, not raise out of startup.
+        original_on_empty = ConfigCard._on_empty_config_content
+    except (ImportError, AttributeError):
+        logger.warning('could not import ConfigCard, skipping card button alignment')
+        return
+
+    def patched_on_empty(self):
+        try:
+            button = self.card.expandButton
+            policy = button.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            button.setSizePolicy(policy)
+        except Exception as e:
+            logger.warning(f'could not reserve expand button space: {e}')
+        original_on_empty(self)
+
+    ConfigCard._on_empty_config_content = patched_on_empty
+    logger.info('card action buttons aligned')
+
+
 def translate_notifications():
     """Let toast notifications use the app translation catalog.
 
@@ -132,14 +168,15 @@ def translate_notifications():
     if os.environ.get('OK_GF2_NO_LAYOUT_PATCH'):
         return
     try:
-        from ok.gui.MainWindow import MainWindow
+        from ok.ui.qt.MainWindow import MainWindow
     except ImportError:
         logger.warning('could not import MainWindow, skipping notification translation')
         return
 
     original_show = MainWindow.show_notification
 
-    def patched_show(self, message, title=None, error=False, tray=False, show_tab=None, params=None):
+    def patched_show(self, message, title=None, *args, **kwargs):
+        # ok-script has grown arguments here before, so forward the rest instead of respelling them.
         from ok import og
         try:
             if message:
@@ -148,7 +185,7 @@ def translate_notifications():
                 title = og.app.tr(title)
         except Exception as e:
             logger.warning(f'could not translate notification: {e}')
-        original_show(self, message, title, error, tray, show_tab, params)
+        original_show(self, message, title, *args, **kwargs)
 
     MainWindow.show_notification = patched_show
     logger.info('notifications routed through the translation catalog')
@@ -160,6 +197,7 @@ class Globals(QObject):
         super().__init__()
         widen_settings_text_column()
         size_cards_by_height_for_width()
+        align_card_action_buttons()
         translate_notifications()
         # ok.og.executor.ocr_lib.add_text_fix({"a": "b"})
 
