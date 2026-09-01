@@ -1,4 +1,8 @@
 name: "ok-gf2"
+# Brands the shortcut that runs the app. The icons/ directory only brands the launcher exe, so without this
+# the app shortcut falls back to the icon of the pythonw.exe it targets and shows up as a plain Python file.
+# Read into the launcher at build time, so a change here needs a new installer rather than an app update.
+icon: "icon.ico"
 uac: true
 profiles:
   - name: "en"
