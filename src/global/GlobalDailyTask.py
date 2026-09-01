@@ -109,8 +109,9 @@ LOOP_SCREEN = re.compile(r'Dispatch Room|Start\s*Loop', re.I)
 START_LOOP = re.compile(r'Start\s*Loop', re.I)
 LOOP_ENDED = re.compile(r'Loop\s*ended', re.I)
 
-# How long to wait for the in-game Loop to finish, and how often to look.
-LOOP_TIME_OUT = 600
+# How long to wait for the in-game Loop to finish, and how often to look. The ceiling is generous because a batch that includes Gunsmoke Frontline
+# regularly runs well past ten minutes before it reports back.
+LOOP_TIME_OUT = 1200
 LOOP_POLL_INTERVAL = 5
 
 # Shop. Each supply box carries its price where a button would be - the claimable ones read "Free".
