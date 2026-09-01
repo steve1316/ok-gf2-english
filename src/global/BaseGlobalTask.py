@@ -6,8 +6,14 @@ import cv2
 import pywintypes
 import win32api
 
+from ok import CaptureException, FinishedException, TaskDisabledException
 from src.data.FeatureList import FeatureList as fL
 from src.tasks.BaseGfTask import BaseGfTask
+
+# What ends the whole run rather than the one flow that raised it: the task was stopped, the app is quitting,
+# and the game window is gone. `run_flows` steps over anything else, but for these there is no next flow to
+# move on to, so they go straight up to the executor, which is where the framework already sorts them out.
+STOP_THE_RUN = (TaskDisabledException, FinishedException, CaptureException)
 
 # Shared on-screen vocabulary. Every pattern here is compiled with re.I, so no pattern needs its own
 # character classes for case. Anything referenced by more than one module in this package belongs here
@@ -769,18 +775,35 @@ class BaseGlobalTask(BaseGfTask):
         self.default_config.update({key: True for key, _, _ in flows})
         self.config_description.update({key: description for key, _, description in flows})
 
-    def run_flows(self, flows, finished):
+    def run_flows(self, flows, label):
         """Run each flow whose toggle is on, in table order, starting from the home screen.
+
+        A flow that raises is reported and stepped over rather than taking the rest of the run with it. One unreadable screen used to cost every flow behind
+        it - the daily ended where it stood, with the shop, the wishlist, the event and the boundary push all still queued and none of them claimed. The
+        screen goes back to home in between, since that is where the next flow starts, and a recovery that cannot get there does end the run.
 
         Args:
             flows: The module's `FLOWS` table.
-            finished: What to say once every enabled flow has run.
+            label: What this run is called, for the line saying it is over.
         """
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
+        failed = []
         for key, method, _ in flows:
-            if self.config.get(key):
+            if not self.config.get(key):
+                continue
+            try:
                 getattr(self, method)()
-        self.log_info(finished, notify=True)
+            except STOP_THE_RUN:
+                raise
+            except Exception as error:
+                failed.append(key)
+                self.log_error(f'{key} stopped early, moving on to the next flow: ', exception=error, notify=True)
+                # Looked at before anything is pressed. A flow can raise while the home screen is already up -
+                # one dropped OCR word is enough - and `go_home` opens with two clicks and their sleeps.
+                if not self.is_main(esc=False):
+                    self.go_home()
+        ending = f'finished, but these stopped early: {", ".join(failed)}.' if failed else 'complete.'
+        self.log_info(f'{label} {ending}', notify=True)
 
     def stop_flow(self, message, dump=None):
         """Say why a flow is stopping, record the screen if it was not understood, and return to the home screen.
