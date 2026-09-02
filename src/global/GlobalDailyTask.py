@@ -287,6 +287,23 @@ STATION_PROMPT_TIME_OUT = 4
 DECK_KEY_HINTS = ['Esc', 'P', 'M', 'F1', 'F2', 'F3', 'F4']
 DECK_KEYS_NEEDED = 5
 
+# The two buff icons in the bottom-left corner of the walkable deck, above the `B` hint, as
+# left-top-right-bottom fractions of the frame. Each is a filled circle, blue while that activity's buff
+# is up and neutral grey while it is not, so the fill says whether the trip to the station is worth
+# taking. Fractions rather than pixels because they were measured off a 1920x1080 capture and have to
+# hold at every other window size.
+DRINK_BUFF_ICON = (0.0547, 0.8981, 0.0714, 0.9278)
+FOOD_BUFF_ICON = (0.0750, 0.8981, 0.0932, 0.9278)
+
+# What counts as lit. Across every Crew Deck frame kept so far a lit icon reads 0.55-0.68 blue and an
+# unlit one reads 0.00, at every size down to 960x540, so anything in between separates them with room
+# to spare. Blue is measured against red rather than against a fixed range, which is why the framework's
+# own `calculate_color_percentage` is not used - the unlit grey sits inside any absolute blue range wide
+# enough to hold every shade the lit one takes. The floor keeps a dark but blue-tinted pixel out.
+BUFF_LIT_FRACTION = 0.3
+BUFF_BLUE_MARGIN = 25
+BUFF_BLUE_FLOOR = 70
+
 
 class Station(NamedTuple):
     """One Crew Deck activity, how to walk to it, and what to do once it opens."""
@@ -303,14 +320,16 @@ class Station(NamedTuple):
     sleep_between: float
     # Name of the method that performs the activity once the station is open.
     action: str
+    # Where this activity's buff icon sits in the bottom-left corner, as fractions of the frame.
+    buff_icon: tuple
 
 
 # Visited in this order, each starting from the deck entrance.
 STATIONS = (
-    Station('Tea Time', TEA_TIME, ['a', 'w', 'd'], 'Tea Time Walk', 0.7, 'make_drink'),
+    Station('Tea Time', TEA_TIME, ['a', 'w', 'd'], 'Tea Time Walk', 0.7, 'make_drink', DRINK_BUFF_ICON),
     # One key, unlike the CN route, which taps `d` after holding `s`. Walking it by hand showed the tap
     # is not needed to end up in reach of the kitchen.
-    Station('Delicious Cuisine', DELICIOUS_CUISINE, ['s'], 'Delicious Cuisine Walk', 1, 'cook_dish'),
+    Station('Delicious Cuisine', DELICIOUS_CUISINE, ['s'], 'Delicious Cuisine Walk', 1, 'cook_dish', FOOD_BUFF_ICON),
 )
 
 
@@ -366,6 +385,24 @@ def parse_uses_left(text):
         return None
     used, total = int(counter.group(1)), int(counter.group(2))
     return max(0, total - used)
+
+
+def buff_is_lit(patch):
+    """Whether a buff icon is filled in rather than greyed out.
+
+    The lit icon is a solid blue circle and the unlit one is the same circle in neutral grey, so the test is how much of the patch is blue rather than how
+    blue any one pixel is. That survives the 3D deck behind it, which the circle is opaque over, and the white glyph drawn on top of it.
+
+    Args:
+        patch: The icon region cut out of the frame, in the BGR order OpenCV captures in.
+
+    Returns:
+        True when enough of the patch is blue to mean the buff is up.
+    """
+    if patch.size == 0:
+        return False
+    blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
+    return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean()) >= BUFF_LIT_FRACTION
 
 
 def parse_banner_slots(option):
@@ -928,23 +965,48 @@ class GlobalDailyTask(BaseGlobalTask):
     # Crew Deck
 
     def crew_deck(self):
-        """Visit each Crew Deck station in turn."""
+        """Visit each Crew Deck station in turn, skipping any whose buff is already up.
+
+        A station whose buff is up was already used today, and the walk to it is the expensive part - the prompt that says so only appears once the walk has
+        been paid for. The buff icons say the same thing from the entrance, so a spent station costs a look rather than a trip.
+
+        Skipping a station leaves the character where it spawned, which is where every walk is timed from, so the next station carries on from the same
+        entry rather than backing out and coming in again.
+        """
         self.info_set('current_task', 'crew_deck')
+        entered = False
+        lit = None
         for station in STATIONS:
             try:
                 times = walk_times(self.config.get(station.config_key), len(station.keys))
             except ValueError:
                 self.log_info(f'The {station.config_key} setting is not a list of numbers, skipping {station.label}.', notify=True)
                 continue
-            if not self.enter_crew_deck():
-                self.log_info('Could not get into the Crew Deck, skipping the rest.', notify=True)
-                self.leave_crew_deck()
-                return
+            # Only worth opening the deck for a station that might still be walked to. On the first one
+            # that is unknown, so the deck is opened and the icons read. After that the reading answers
+            # it, which is what keeps a spent second station from costing a trip in and straight back out.
+            if not entered and (lit is None or not lit.get(station.label)):
+                if not self.enter_crew_deck():
+                    self.log_info('Could not get into the Crew Deck, skipping the rest.', notify=True)
+                    self.leave_crew_deck()
+                    return
+                entered = True
+            # Read once and kept for the rest of the run, across the leaving and re-entering each walk
+            # costs. An activity run later only ever lights its own icon, so a stale reading can skip a
+            # trip already made but never one still owed.
+            if lit is None:
+                lit = self.read_activity_buffs()
+            if lit.get(station.label):
+                self.log_info(f'{station.label}: its buff is already up, so not walking to it.', notify=True)
+                continue
             self.log_info(f'walking to {station.label}, holding {list(zip(station.keys, times))}')
             self.press_keys_sequence(station.keys, times, sleep_between=station.sleep_between)
             self.sleep(1)
             self.open_station(station)
             # Back to the entrance between stations, so the next walk starts where its timings were measured.
+            self.leave_crew_deck()
+            entered = False
+        if entered:
             self.leave_crew_deck()
 
     def in_walkable_deck(self):
@@ -1044,6 +1106,27 @@ class GlobalDailyTask(BaseGlobalTask):
         else:
             self.log_info(f'prompt "{text}" leaves {left} use(s) today')
         return left
+
+    def read_activity_buffs(self):
+        """Read which activity buffs are up, off the icons in the bottom-left corner of the walkable deck.
+
+        Only ever asked once the deck is walkable, since the icons belong to that screen's HUD and a scene still playing shows none of them. A missing frame
+        gives an empty answer rather than a negative one, so an unreadable corner walks every station as before instead of skipping the lot.
+
+        Returns:
+            Which stations have their buff up, by label. Missing labels mean unknown, not down.
+        """
+        frame = self.frame
+        if frame is None:
+            self.log_info('buff icons: no frame to read, so walking to every station')
+            return {}
+        lit = {}
+        for station in STATIONS:
+            # Through `box_of_screen` rather than by multiplying out the fractions, so the regions hold on
+            # a window that is letterboxed as well as one that is merely a different size.
+            lit[station.label] = buff_is_lit(self.box_of_screen(*station.buff_icon).crop_frame(frame))
+        self.log_info('buff icons: ' + ', '.join(f'{label} {"up" if up else "not up"}' for label, up in lit.items()))
+        return lit
 
     def make_drink(self):
         """Make the drink Tea Time opens with already selected.
