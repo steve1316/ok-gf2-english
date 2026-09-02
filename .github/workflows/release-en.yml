@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, as YEAR.MONTH.DAY. Tagged as v2026.8.26.'
+        description: 'Version to release, as YEAR.MM.DD. Tagged as v2026.08.31.'
         required: true
         type: string
       prerelease:
@@ -27,14 +27,14 @@ jobs:
 
     steps:
       # pyappify only sees tags matching ^v?\d+\.\d+\.\d+$, so no "en" marker can go in the tag name.
-      # Versions are CalVer (year.month.day) to stay clear of upstream's v1.2.x line. The parts are
-      # compared as numbers, so a second release on one day just needs a higher third part.
+      # Versions are CalVer (year.month.day, month and day zero-padded to two digits) to stay clear of upstream's
+      # v1.2.x line. The parts are compared as numbers, so a second release on one day just needs a higher third part.
       - name: Check the version and settle the tag
         shell: pwsh
         run: |
           $version = "${{ inputs.version }}"
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-            Write-Error "Version must look like 2026.8.26, got '$version'."
+          if ($version -notmatch '^\d{4}\.\d{2}\.\d{2}$') {
+            Write-Error "Version must look like 2026.08.31, got '$version'."
             exit 1
           }
           "TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
