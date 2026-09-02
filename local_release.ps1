@@ -3,7 +3,7 @@
 # third-party actions the workflow needs. It tags and pushes for you. Creating the GitHub release and uploading
 # the files stay manual. It differs from the workflow in one deliberate way, noted at the tag check below.
 #
-#   .\local_release.ps1 -Version 2026.8.26
+#   .\local_release.ps1 -Version 2026.08.31
 #
 # Needs git, Node, pnpm, a Rust MSVC toolchain with the VS C++ build tools, and Python 3.12 on PATH.
 # Run it from an elevated PowerShell, since building the offline package runs the launcher as administrator.
@@ -73,8 +73,8 @@ function Get-RemoteReleaseTags {
 # Preflight
 
 Write-Step 'Checking the version and settling the tag'
-if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    throw "Version must look like 2026.8.26, got '$Version'."
+if ($Version -notmatch '^\d{4}\.\d{2}\.\d{2}$') {
+    throw "Version must look like 2026.08.31, got '$Version'."
 }
 $Tag = "v$Version"
 Write-Host "    Releasing as $Tag"
