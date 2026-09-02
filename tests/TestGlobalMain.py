@@ -5,11 +5,13 @@ import re
 import types
 import unittest
 
+import cv2
+import numpy as np
 import pywintypes
 
 from unittest import mock
 
-from ok import Box, find_boxes_by_name
+from ok import Box, find_boxes_by_name, relative_box
 from ok.task.task import OCR, BaseTask, ExecutorOperation
 from ok.gui.common.config import Language
 from ok.test.TaskTestCase import TaskTestCase
@@ -1256,6 +1258,182 @@ class TestDailyCounter(unittest.TestCase):
         """Returning 0 here would silently skip the activity every run. None means go ahead and find out."""
         self.assertIsNone(self.parse('Makiatto'))
         self.assertIsNone(self.parse('Tea Time'))
+
+
+class _Deck:
+    """A stand-in for the daily task holding one captured frame, so the icon regions can be read off a real Crew Deck."""
+
+    read_activity_buffs = GlobalDailyTask.read_activity_buffs
+
+    def __init__(self, frame):
+        self.frame = frame
+        self.logged = []
+
+    def box_of_screen(self, x, y, to_x=1.0, to_y=1.0):
+        """The same-ratio half of the framework's own, which is the half a stored frame exercises."""
+        height, width = self.frame.shape[:2]
+        return relative_box(width, height, x, y, to_x=to_x, to_y=to_y)
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+
+class _Trips:
+    """A stand-in for the daily task recording which stations the Crew Deck flow actually walked to.
+
+    Borrows the real `crew_deck` the same way `_Activity` borrows its methods, since walking, entering and leaving are all the flow asks of the task and none
+    of them need a live executor.
+    """
+
+    crew_deck = GlobalDailyTask.crew_deck
+
+    def __init__(self, lit=None, config=None, can_enter=True):
+        self.lit = lit or {}
+        self.config = config or {'Tea Time Walk': '0.636-1.25-0.495', 'Delicious Cuisine Walk': '0.747'}
+        self.can_enter = can_enter
+        self.entries = 0
+        self.exits = 0
+        self.reads = 0
+        self.walked = []
+        self.opened = []
+        self.logged = []
+
+    def info_set(self, key, value):
+        pass
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def sleep(self, seconds):
+        pass
+
+    def enter_crew_deck(self):
+        self.entries += 1
+        return self.can_enter
+
+    def leave_crew_deck(self):
+        self.exits += 1
+
+    def read_activity_buffs(self):
+        self.reads += 1
+        return dict(self.lit)
+
+    def press_keys_sequence(self, keys, times, sleep_between=0):
+        self.walked.append(keys)
+
+    def open_station(self, station):
+        self.opened.append(station.label)
+
+
+class TestActivityBuffIcons(unittest.TestCase):
+    """The bottom-left corner of the walkable deck says which activities have already been used today.
+
+    It says it in icons rather than in words, which is why OCR never saw it - a full-screen read of that view returns the key hints and the station prompt and
+    nothing at all for either icon. A lit icon is a filled blue circle and an unlit one is the same circle in grey, so the reading is how much of it is blue.
+    """
+
+    def daily(self):
+        return importlib.import_module('src.global.GlobalDailyTask')
+
+    def patch(self, colour):
+        """A solid patch in the BGR order OpenCV captures in."""
+        return np.full((33, 32, 3), colour, dtype=np.uint8)
+
+    def fixture(self, name):
+        image = cv2.imread(f'tests/images/{name}.png')
+        self.assertIsNotNone(image, f'tests/images/{name}.png should be readable')
+        return image
+
+    def test_a_grey_icon_is_not_lit(self):
+        """The measured colour of the unlit icon, which is neutral rather than merely darker."""
+        self.assertFalse(self.daily().buff_is_lit(self.patch((88, 87, 86))))
+
+    def test_the_channels_are_read_in_capture_order(self):
+        """Frames arrive BGR. Reading them as RGB inverts the whole check silently, so the same triple has to answer both ways round."""
+        daily = self.daily()
+        self.assertTrue(daily.buff_is_lit(self.patch((138, 104, 48))))
+        self.assertFalse(daily.buff_is_lit(self.patch((48, 104, 138))))
+
+    def test_a_dark_blue_tinted_patch_is_not_lit(self):
+        """Blue enough against red to pass the margin, too dark to be the icon. This is the only thing the floor is there for."""
+        self.assertFalse(self.daily().buff_is_lit(self.patch((60, 20, 10))))
+
+    def test_an_empty_patch_is_not_lit(self):
+        """A region cropped clean off the edge of the frame is unknown, and unknown has to walk rather than skip."""
+        self.assertFalse(self.daily().buff_is_lit(np.zeros((0, 0, 3), dtype=np.uint8)))
+
+    def test_the_real_icons_read_the_way_they_look(self):
+        """Crops of the icon regions taken from kept frames: both lit after the dish, the food one still grey before it."""
+        daily = self.daily()
+        self.assertTrue(daily.buff_is_lit(self.fixture('crew_deck_drink_buff_lit')))
+        self.assertTrue(daily.buff_is_lit(self.fixture('crew_deck_food_buff_lit')))
+        self.assertFalse(daily.buff_is_lit(self.fixture('crew_deck_food_buff_unlit')))
+
+    def test_the_regions_land_on_the_icons_at_another_window_size(self):
+        """The fractions were measured off a 1920x1080 capture. This frame is the same deck at 1280x720, so a region that only works at one size fails here."""
+        deck = _Deck(self.fixture('crew_deck_drink_buff_only'))
+        self.assertEqual({'Tea Time': True, 'Delicious Cuisine': False}, deck.read_activity_buffs())
+
+    def test_a_missing_frame_reads_as_unknown_rather_than_down(self):
+        """An empty answer walks every station, which is the old behaviour. Answering False for each would skip the lot."""
+        self.assertEqual({}, _Deck(None).read_activity_buffs())
+
+    def test_every_station_carries_an_icon(self):
+        """A new station cannot quietly opt out of the check, the same way it cannot opt out of a walk setting."""
+        for station in self.daily().STATIONS:
+            self.assertEqual(4, len(station.buff_icon), f'{station.label} needs a left-top-right-bottom icon region')
+
+
+class TestCrewDeckTrips(unittest.TestCase):
+    """Walking to a station is the expensive part, and the prompt that says it is spent only appears once the walk has been paid for.
+
+    The buff icons say the same thing from the entrance, so the flow reads them once per visit and skips the trips they rule out. Skipping never moves the
+    character, so the next station carries on from the same entry rather than backing out and coming in again.
+    """
+
+    def test_both_buffs_up_costs_one_entry_and_no_walking(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': True})
+        task.crew_deck()
+        self.assertEqual(1, task.entries)
+        self.assertEqual([], task.walked)
+        self.assertEqual([], task.opened)
+        self.assertEqual(1, task.exits, 'the deck still has to be left once')
+
+    def test_no_buffs_up_walks_to_both_as_before(self):
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False})
+        task.crew_deck()
+        self.assertEqual(['Tea Time', 'Delicious Cuisine'], task.opened)
+        self.assertEqual(2, task.entries, 'each walk is timed from the entrance, so a station that ran re-enters for the next one')
+        self.assertEqual(1, task.reads, 'the icons are read once for the run, not once per entry')
+
+    def test_one_buff_up_skips_only_its_own_trip(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False})
+        task.crew_deck()
+        self.assertEqual(['Delicious Cuisine'], task.opened)
+        self.assertEqual([['s']], task.walked)
+        self.assertEqual(1, task.entries, 'the skipped station left the character at the entrance, so no second entry is needed')
+
+    def test_the_second_buff_being_up_costs_no_entry_of_its_own(self):
+        """The reading is already in hand by then, so the spent station has to be ruled out before the deck is opened rather than after."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': True})
+        task.crew_deck()
+        self.assertEqual(['Tea Time'], task.opened)
+        self.assertEqual(1, task.entries, 'entering only to read a cached answer and back straight out is the trip this saves')
+        self.assertEqual(1, task.exits)
+
+    def test_a_deck_that_will_not_open_gives_up_without_reading_icons(self):
+        task = _Trips(can_enter=False)
+        task.crew_deck()
+        self.assertEqual(0, task.reads)
+        self.assertEqual([], task.opened)
+
+    def test_a_broken_walk_setting_skips_its_station_without_entering(self):
+        """The setting is checked before the deck is opened, so a bad one costs nothing and leaves the other station alone."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False},
+                      config={'Tea Time Walk': 'not-a-number', 'Delicious Cuisine Walk': '0.747'})
+        task.crew_deck()
+        self.assertEqual(['Delicious Cuisine'], task.opened)
+        self.assertEqual(1, task.entries)
 
 
 class TestRewardProgress(unittest.TestCase):
