@@ -1369,6 +1369,37 @@ class TestActivityBuffIcons(unittest.TestCase):
         self.assertTrue(daily.buff_is_lit(self.fixture('crew_deck_food_buff_lit')))
         self.assertFalse(daily.buff_is_lit(self.fixture('crew_deck_food_buff_unlit')))
 
+    def test_the_measured_fraction_is_reported_alongside_the_verdict(self):
+        """A false reading silently skips an activity for the day, so the number behind the verdict has to be in the log to diagnose one."""
+        daily = self.daily()
+        self.assertGreater(daily.blue_fraction(self.fixture('crew_deck_drink_buff_lit')), daily.BUFF_LIT_FRACTION)
+        self.assertEqual(0.0, daily.blue_fraction(self.fixture('crew_deck_food_buff_unlit')))
+
+    def test_a_real_reading_is_nowhere_near_the_threshold(self):
+        """Lit icons measure about 0.19 to 0.33 and every unlit one exactly 0.0, so the threshold sits in open space rather than between close neighbours."""
+        daily = self.daily()
+        for name in ('crew_deck_drink_buff_lit', 'crew_deck_food_buff_lit'):
+            self.assertGreater(daily.blue_fraction(self.fixture(name)), daily.BUFF_LIT_FRACTION * 1.5, f'{name} should read solidly lit')
+        for name in ('crew_deck_food_buff_unlit', 'crew_deck_food_buff_unlit_lounge', 'crew_deck_drink_buff_unlit_lounge'):
+            self.assertEqual(0.0, daily.blue_fraction(self.fixture(name)), f'{name} has no saturated blue in it at all')
+
+    def test_an_unlit_icon_over_a_blue_lit_room_is_not_lit(self):
+        """The regression this whole check nearly failed on.
+
+        The end of the deck the character spawns at is lit blue-grey, and the icon's container is translucent over whatever is behind it. Both icons in this
+        frame are plainly grey, and both measured as blue enough to count - the food one skipped its station for the day, and the drink one came within a
+        percent of doing the same.
+        """
+        daily = self.daily()
+        self.assertFalse(daily.buff_is_lit(self.fixture('crew_deck_food_buff_unlit_lounge')), 'the food icon here is grey')
+        self.assertFalse(daily.buff_is_lit(self.fixture('crew_deck_drink_buff_unlit_lounge')), 'the drink icon here is grey')
+
+    def test_a_tinted_background_is_told_apart_from_a_lit_icon_by_saturation(self):
+        """A lit icon is saturated blue, roughly 90 above red. A room merely lit blue is about 22 above it, which is the whole distinction."""
+        daily = self.daily()
+        self.assertGreater(daily.BUFF_BLUE_MARGIN, 25, 'a blue-lit room clears a margin of 25 without any buff being up')
+        self.assertLess(daily.BUFF_BLUE_MARGIN, 90, 'the lit icon itself sits about 90 above red and has to keep clearing it')
+
     def test_the_regions_land_on_the_icons_at_another_window_size(self):
         """The fractions were measured off a 1920x1080 capture. This frame is the same deck at 1280x720, so a region that only works at one size fails here."""
         deck = _Deck(self.fixture('crew_deck_drink_buff_only'))

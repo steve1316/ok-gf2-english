@@ -300,8 +300,19 @@ FOOD_BUFF_ICON = (0.0750, 0.8981, 0.0932, 0.9278)
 # to spare. Blue is measured against red rather than against a fixed range, which is why the framework's
 # own `calculate_color_percentage` is not used - the unlit grey sits inside any absolute blue range wide
 # enough to hold every shade the lit one takes. The floor keeps a dark but blue-tinted pixel out.
-BUFF_LIT_FRACTION = 0.3
-BUFF_BLUE_MARGIN = 25
+# How blue a pixel has to be to count, and how much of the icon has to be that blue.
+#
+# The margin is the part that matters. The lit icon is a saturated blue that measures about 90 above red,
+# while a merely blue-lit room measures about 22 - and the deck's spawn end is lit blue-grey, with the
+# icon's container translucent over it. At a margin of 25 that room alone carried a grey icon to 0.365,
+# past a 0.3 threshold, and the flow gave up that station for the day without anything having been used.
+# At 50 every unlit icon measured so far reads exactly 0.0, in that room and out of it.
+#
+# The fraction comes down with it, since a stricter margin counts fewer pixels of a genuinely lit icon:
+# real ones measure 0.19 to 0.33. Both bounds are set where the gap is widest rather than snug against
+# either side, because the readings either side of it are 0.0 and 0.19, not neighbours.
+BUFF_LIT_FRACTION = 0.1
+BUFF_BLUE_MARGIN = 50
 BUFF_BLUE_FLOOR = 70
 
 
@@ -387,11 +398,29 @@ def parse_uses_left(text):
     return max(0, total - used)
 
 
+def blue_fraction(patch):
+    """How much of a buff icon is the solid blue of a lit one.
+
+    The lit icon is a solid blue circle and the unlit one is the same circle in neutral grey, so the reading is how much of the patch is blue rather than how
+    blue any one pixel is. That survives the 3D deck behind it, which the circle is opaque over, and the white glyph drawn on top of it.
+
+    Kept apart from the verdict so the number can be logged. A wrong reading and a marginal one look identical in a log that only records up or not up, and
+    measured icons sit at either roughly 0.62 or exactly 0.0 - so anything between the two is evidence that the region is not on the icon at all.
+
+    Args:
+        patch: The icon region cut out of the frame, in the BGR order OpenCV captures in.
+
+    Returns:
+        The fraction of the patch that is blue, or 0.0 for a patch cropped clean off the edge of the frame.
+    """
+    if patch.size == 0:
+        return 0.0
+    blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
+    return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean())
+
+
 def buff_is_lit(patch):
     """Whether a buff icon is filled in rather than greyed out.
-
-    The lit icon is a solid blue circle and the unlit one is the same circle in neutral grey, so the test is how much of the patch is blue rather than how
-    blue any one pixel is. That survives the 3D deck behind it, which the circle is opaque over, and the white glyph drawn on top of it.
 
     Args:
         patch: The icon region cut out of the frame, in the BGR order OpenCV captures in.
@@ -399,10 +428,7 @@ def buff_is_lit(patch):
     Returns:
         True when enough of the patch is blue to mean the buff is up.
     """
-    if patch.size == 0:
-        return False
-    blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
-    return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean()) >= BUFF_LIT_FRACTION
+    return blue_fraction(patch) >= BUFF_LIT_FRACTION
 
 
 def parse_banner_slots(option):
@@ -1120,12 +1146,17 @@ class GlobalDailyTask(BaseGlobalTask):
         if frame is None:
             self.log_info('buff icons: no frame to read, so walking to every station')
             return {}
-        lit = {}
+        lit, measured = {}, []
         for station in STATIONS:
             # Through `box_of_screen` rather than by multiplying out the fractions, so the regions hold on
             # a window that is letterboxed as well as one that is merely a different size.
-            lit[station.label] = buff_is_lit(self.box_of_screen(*station.buff_icon).crop_frame(frame))
-        self.log_info('buff icons: ' + ', '.join(f'{label} {"up" if up else "not up"}' for label, up in lit.items()))
+            fraction = blue_fraction(self.box_of_screen(*station.buff_icon).crop_frame(frame))
+            lit[station.label] = fraction >= BUFF_LIT_FRACTION
+            # The number goes in the log beside the verdict. A reading that is wrong and one that is merely
+            # close both read as "up" on their own, and a false "up" silently gives up that activity for the
+            # day - so the log has to carry enough to tell a real buff from a region that has slipped.
+            measured.append(f'{station.label} {"up" if lit[station.label] else "not up"} ({fraction:.3f})')
+        self.log_info('buff icons: ' + ', '.join(measured))
         return lit
 
     def make_drink(self):
