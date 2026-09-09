@@ -66,6 +66,8 @@ class _SingleFlow:
         """
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
         getattr(self, self.flow)()
+        # A flow that stopped early may have parked on a screen for a flow behind it, and here there is none.
+        self.leave_parked_screen()
         self.log_info(f'{self.label} finished.', notify=True)
 
 

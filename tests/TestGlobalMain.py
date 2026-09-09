@@ -991,6 +991,76 @@ class TestCommissionsNavigation(unittest.TestCase):
         self.assertEqual([{'after_sleep': 0, 'pause': 0}, {'after_sleep': 0, 'pause': None}], nav.presses)
 
 
+class _ModeEntry:
+    """A stand-in for the task, scripted with whether the mode's rail entry is already on screen.
+
+    Borrows the real method for the same reason `_Commissions` does. Coordinates come from a real 1920x1080 capture of the Regular Commissions rail.
+    """
+
+    open_commission_mode = BaseGlobalTask.open_commission_mode
+
+    def __init__(self, on_rail=False, navigates=True, entry_after_navigating=True):
+        """Build the stand-in.
+
+        Args:
+            on_rail: Whether the entry is already showing, as it is when another mode's card is up.
+            navigates: Whether the navigation to Regular Commissions succeeds.
+            entry_after_navigating: Whether the entry is there once the navigation has run.
+        """
+        self.on_rail = on_rail
+        self.navigates = navigates
+        self.entry_after_navigating = entry_after_navigating
+        self.actions = []
+        self.box = types.SimpleNamespace(left=None)
+
+    def ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('probe')
+        return [Box(66, 350, 290, 80, name='Peak Value')] if self.on_rail else []
+
+    def click(self, box, after_sleep=0):
+        self.actions.append('click')
+
+    def open_regular_commissions(self):
+        self.actions.append('commissions')
+        return self.navigates
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('rail')
+        return Box(66, 350, 290, 80, name='Peak Value') if self.entry_after_navigating else None
+
+
+class TestCommissionModeEntry(unittest.TestCase):
+    """Every mode in Regular Commissions shares one rail, so a flow that ends on another mode's card is already looking at its own entry.
+
+    Boss Fight finding its attempts spent used to go home and walk the whole navigation back, eight seconds to reach a rail that never left the screen.
+    """
+
+    def test_an_entry_already_on_screen_is_clicked_where_it_stands(self):
+        entry = _ModeEntry(on_rail=True)
+        self.assertTrue(entry.open_commission_mode(re.compile('Peak Value')))
+        self.assertEqual(['probe', 'click'], entry.actions)
+
+    def test_an_entry_that_is_not_showing_is_reached_through_the_navigation(self):
+        entry = _ModeEntry(on_rail=False)
+        self.assertTrue(entry.open_commission_mode(re.compile('Peak Value')))
+        self.assertEqual(['probe', 'commissions', 'rail'], entry.actions)
+
+    def test_the_probe_reads_the_screen_once_rather_than_waiting_on_it(self):
+        """`wait_ocr` has no gap between checks, so even a one-second budget spends it re-reading a home screen that has already answered."""
+        entry = _ModeEntry(on_rail=False)
+        entry.open_commission_mode(re.compile('Peak Value'))
+        self.assertEqual(1, entry.actions.count('probe'), 'the probe should be a single read, not a poll')
+
+    def test_navigation_that_fails_stops_before_looking_for_the_entry(self):
+        entry = _ModeEntry(on_rail=False, navigates=False)
+        self.assertFalse(entry.open_commission_mode(re.compile('Peak Value')))
+        self.assertEqual(['probe', 'commissions'], entry.actions)
+
+    def test_an_entry_missing_after_navigating_gives_up(self):
+        entry = _ModeEntry(on_rail=False, entry_after_navigating=False)
+        self.assertFalse(entry.open_commission_mode(re.compile('Peak Value')))
+
+
 class _Tickets:
     """A stand-in for the task, scripted with what the ticket corner reads on each successive look."""
 
@@ -2153,19 +2223,26 @@ ISOLATION_FLOWS = (
 
 
 class _Flows:
-    """A stand-in task for `run_flows`, scripted with which flows raise and which toggles are off."""
+    """A stand-in task for `run_flows`, scripted with which flows raise, which park, and which toggles are off."""
 
-    def __init__(self, raises=None, off=(), at_home=False):
+    leave_parked_screen = BaseGlobalTask.leave_parked_screen
+
+    def __init__(self, raises=None, off=(), at_home=False, parks=(), homes=()):
         """Build the stand-in.
 
         Args:
             raises: Config key to the exception that flow should raise.
             off: Config keys whose toggles are switched off.
             at_home: Whether the home screen is showing when a flow raises.
+            parks: Config keys whose flow stops early on a screen it means to leave up for the flow behind it.
+            homes: Config keys whose flow ends by going home, as every ordinary ending does.
         """
         self.raises = raises or {}
         self.config = {key: key not in off for key, _, _ in ISOLATION_FLOWS}
         self.at_home = at_home
+        self.parks = parks
+        self.homes = homes
+        self.parked = False
         self.ran = []
         self.logged = []
         self.errors = []
@@ -2190,6 +2267,10 @@ class _Flows:
             Exception: Whatever `raises` holds for this flow.
         """
         self.ran.append(key)
+        if key in self.homes:
+            self.go_home()
+        if key in self.parks:
+            self.parked = True
         if key in self.raises:
             raise self.raises[key]
 
@@ -2201,6 +2282,7 @@ class _Flows:
 
     def go_home(self):
         self.recovered += 1
+        self.parked = False
 
     def log_info(self, message, notify=False):
         self.logged.append(message)
@@ -2265,6 +2347,24 @@ class TestFlowIsolation(unittest.TestCase):
         self.run_flows(task)
         self.assertEqual(['One', 'Three'], task.ran)
 
+    def test_a_run_whose_last_flow_parked_is_brought_home(self):
+        """A flow may park on a shared screen so the next one can start from it, and the last flow has no next one to hand it to."""
+        task = _Flows(parks=('Three',))
+        self.run_flows(task)
+        self.assertEqual(1, task.recovered, 'a run that ends on a parked screen should still finish at home')
+
+    def test_a_run_where_nothing_parked_is_left_alone(self):
+        """Every ordinary ending already went home, so this must not cost a second trip - nor a look at the screen to find that out."""
+        task = _Flows()
+        self.run_flows(task)
+        self.assertEqual(0, task.recovered)
+
+    def test_a_park_is_cleared_by_the_flow_that_goes_home_after_it(self):
+        """Otherwise a park early in a run would send it home again at the end, having long since left that screen."""
+        task = _Flows(parks=('One',), homes=('Two',))
+        self.run_flows(task)
+        self.assertEqual(1, task.recovered, 'only the flow that went home should have done so')
+
     def test_a_stop_request_still_ends_the_run(self):
         """Stopping the task, the app quitting, and losing the game window are all reasons there is no next flow to move on to.
 
@@ -2277,6 +2377,56 @@ class TestFlowIsolation(unittest.TestCase):
             with self.assertRaises(error_class, msg=f'{error_class.__name__} should end the run rather than being stepped over'):
                 self.run_flows(task)
             self.assertEqual(['One'], task.ran)
+
+
+class _Stopping:
+    """A stand-in for the task, recording how a flow's early exit left the screen."""
+
+    stop_flow = BaseGlobalTask.stop_flow
+
+    def __init__(self):
+        self.logged = []
+        self.dumped = []
+        self.parked = False
+        self.went_home = 0
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def dump_screen(self, label):
+        self.dumped.append(label)
+
+    def go_home(self):
+        self.went_home += 1
+
+
+class TestStopFlow(unittest.TestCase):
+    """The two endings a flow has short of finishing - something was not found, and there was nothing to do - want the same three steps.
+
+    Where the screen is left is the part that differs: an exit that read the game correctly can leave it on a screen the next flow wants.
+    """
+
+    def test_it_says_why_and_goes_home(self):
+        stopping = _Stopping()
+        self.assertFalse(stopping.stop_flow('Nothing to collect.'))
+        self.assertEqual(['Nothing to collect.'], stopping.logged)
+        self.assertEqual(1, stopping.went_home)
+
+    def test_only_an_unexpected_screen_is_kept(self):
+        """An early exit that read the game correctly has nothing worth saving, and a frame per skipped flow buries the ones that matter."""
+        quiet = _Stopping()
+        quiet.stop_flow('Nothing to collect.')
+        self.assertEqual([], quiet.dumped)
+        unexpected = _Stopping()
+        unexpected.stop_flow('Found no card to open.', dump='no_card')
+        self.assertEqual(['no_card'], unexpected.dumped)
+
+    def test_a_parked_exit_leaves_the_screen_where_it_is(self):
+        """Only safe where every flow behind it can start from that screen, which is why it is asked for rather than assumed."""
+        stopping = _Stopping()
+        self.assertFalse(stopping.stop_flow('Nothing to collect.', home=False))
+        self.assertEqual(0, stopping.went_home)
+        self.assertTrue(stopping.parked, 'the run has to know it was left there, so it can put it back at the end')
 
 
 class _PeakValue:
@@ -2351,57 +2501,38 @@ class TestPeakValueRewards(unittest.TestCase):
         self.assertFalse(screen.open_periodic_returns())
 
 
-_MAX_BATTLES = importlib.import_module('src.global.BaseGlobalTask').MAX_BATTLES
+class _WeeklyFlow:
+    """Shared stand-in for the weekly flows, recording each step and where the flow left the screen.
 
-
-class _BossFight:
-    """A stand-in for the weekly task, scripted with the attempts the rail shows and how far the flow can get.
-
-    Borrows the real method for the same reason `_PeakValue` does. The Auto Mode dialog is a shared helper with tests of its own below, so it is scripted
-    here as a single outcome rather than replayed press by press. Coordinates come from a real 1920x1080 capture of the rail and its card.
+    Both flows have the same shape - reach the mode from the rail, read a tally off its card, and either stop there or go in - so a subclass supplies only
+    the tally it reads and what it does once it is in. Coordinates come from a real 1920x1080 capture of the rail and its card.
     """
 
-    def __init__(self, attempts=(0, 3), has_card_button=True, battles=True):
-        self.attempts = attempts
-        self.has_card_button = has_card_button
-        self.battles = battles
+    def __init__(self):
         self.actions = []
         self.logged = []
         self.dumped = []
         self.stopped = None
+        self.parked = None
         self.went_home = False
+        self.has_card_button = True
         self.box = types.SimpleNamespace(left=None, bottom_right=None)
-
-    def boss_fight(self):
-        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
-        return weekly.GlobalWeeklyTask.boss_fight(self)
 
     def info_set(self, key, value):
         pass
 
-    def open_regular_commissions(self):
-        self.actions.append('commissions')
+    def open_commission_mode(self, match):
+        self.actions.append('mode')
         return True
 
     def ocr(self, **kwargs):
         return []
-
-    def read_counter_under(self, label, boxes=None, **kwargs):
-        return self.attempts
-
-    def wait_click_ocr(self, match=None, box=None, **kwargs):
-        self.actions.append('rail')
-        return Box(66, 250, 290, 80, name='Boss Fight')
 
     def click_card_button(self, title, button, **kwargs):
         if not self.has_card_button:
             return None
         self.actions.append('proceed')
         return Box(1600, 362, 250, 45, name='Proceed')
-
-    def run_auto_battles(self, time_out):
-        self.actions.append(('auto battles', time_out))
-        return self.battles
 
     def go_home(self):
         self.went_home = True
@@ -2412,11 +2543,85 @@ class _BossFight:
     def dump_screen(self, label):
         self.dumped.append(label)
 
-    def stop_flow(self, message, dump=None):
+    def stop_flow(self, message, dump=None, home=True):
         self.stopped = message
+        self.parked = not home
         if dump:
             self.dumped.append(dump)
         return False
+
+
+class _PeakValueFlow(_WeeklyFlow):
+    """Scripted with what the reward tally reads.
+
+    Separate from `_PeakValue`, which covers the Periodic Returns popup on its own. This one borrows `claim_peak_value` to check where the flow ends up.
+    """
+
+    def __init__(self, rewards=(0, 35)):
+        super().__init__()
+        self.rewards = rewards
+
+    def claim_peak_value(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        return weekly.GlobalWeeklyTask.claim_peak_value(self)
+
+    def read_counter_under(self, label, boxes=None, **kwargs):
+        return self.rewards
+
+    def open_periodic_returns(self):
+        self.actions.append('returns')
+        return True
+
+    def wait_click_ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('claim all')
+        return Box(1416, 837, 190, 60, name='Claim All')
+
+    def wait_pop_up(self, time_out=15, count=100):
+        pass
+
+
+class TestPeakValueFlow(unittest.TestCase):
+    """Where the flow leaves the screen, as opposed to how it reaches the rewards."""
+
+    def test_a_finished_week_stays_on_the_rail(self):
+        """`35/35` means the rewards are in, and the rail is still up behind the card that said so."""
+        screen = _PeakValueFlow(rewards=(35, 35))
+        self.assertFalse(screen.claim_peak_value())
+        self.assertEqual(['mode'], screen.actions)
+        self.assertTrue(screen.parked)
+
+    def test_rewards_waiting_are_claimed_and_the_run_goes_home(self):
+        screen = _PeakValueFlow(rewards=(0, 35))
+        screen.claim_peak_value()
+        self.assertEqual(['mode', 'proceed', 'returns', 'claim all'], screen.actions)
+        self.assertTrue(screen.went_home)
+
+
+_MAX_BATTLES = importlib.import_module('src.global.BaseGlobalTask').MAX_BATTLES
+
+
+class _BossFight(_WeeklyFlow):
+    """Scripted with the attempts tally, whether the card carries its button, and whether Auto Mode runs.
+
+    The Auto Mode dialog is a shared helper with tests of its own below, so it is scripted here as a single outcome rather than replayed press by press.
+    """
+
+    def __init__(self, attempts=(0, 3), has_card_button=True, battles=True):
+        super().__init__()
+        self.attempts = attempts
+        self.has_card_button = has_card_button
+        self.battles = battles
+
+    def boss_fight(self):
+        weekly = importlib.import_module('src.global.GlobalWeeklyTask')
+        return weekly.GlobalWeeklyTask.boss_fight(self)
+
+    def read_counter_under(self, label, boxes=None, **kwargs):
+        return self.attempts
+
+    def run_auto_battles(self, time_out):
+        self.actions.append(('auto battles', time_out))
+        return self.battles
 
 
 class TestBossFight(unittest.TestCase):
@@ -2438,11 +2643,17 @@ class TestBossFight(unittest.TestCase):
         self.assertNotIn('proceed', screen.actions)
         self.assertIn('3/3', screen.stopped)
 
+    def test_a_spent_week_stays_on_the_rail_for_the_flow_behind_it(self):
+        """Peak Value is on the same rail, so going home here walked the whole navigation back to a screen that never left."""
+        screen = _BossFight(attempts=(3, 3))
+        screen.boss_fight()
+        self.assertTrue(screen.parked, 'the rail is still up, and the next weekly flow enters through it')
+
     def test_attempts_remaining_hand_over_to_auto_mode(self):
         weekly = importlib.import_module('src.global.GlobalWeeklyTask')
         screen = _BossFight(attempts=(0, 3))
         screen.boss_fight()
-        self.assertEqual(['commissions', 'rail', 'proceed', ('auto battles', weekly.BOSS_BATTLE_TIME_OUT)], screen.actions)
+        self.assertEqual(['mode', 'proceed', ('auto battles', weekly.BOSS_BATTLE_TIME_OUT)], screen.actions)
         self.assertTrue(screen.went_home)
 
     def test_an_unreadable_counter_says_so_and_goes_on_to_look(self):

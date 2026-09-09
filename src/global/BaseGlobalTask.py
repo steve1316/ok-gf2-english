@@ -209,6 +209,12 @@ class BaseGlobalTask(BaseGfTask):
     method that compares against hardcoded Simplified Chinese with one that matches English on-screen text directly.
     """
 
+    # Whether the last flow deliberately stopped somewhere other than the home screen, so the flow behind it
+    # could start from there. Set by `stop_flow`, cleared by everything that reaches home. A flag rather than
+    # a look at the screen, because the answer is already known and a look costs an OCR pass and two template
+    # matches on every run of every task, including the ones where no flow can park at all.
+    parked = False
+
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # Opting out of the reverse OCR translation
@@ -690,6 +696,26 @@ class BaseGlobalTask(BaseGfTask):
         self.click_ocr_word(COMMISSIONS, box=self.nav_strip, pause=0, raise_if_not_found=True)
         return bool(self.click_ocr_word(REGULAR_COMMISSIONS, box=self.box.top, time_out=10))
 
+    def open_commission_mode(self, match):
+        """Select a mode in the Regular Commissions rail, walking the navigation only when its entry is not already on screen.
+
+        Every mode shares the one rail, so a flow that ends on another mode's card is already looking at the next flow's entry. Probing for it costs a
+        single OCR pass and saves the whole home -> Commissions -> Regular Commissions walk, which is about eight seconds of clicks and their sleeps. The
+        probe is one read rather than a short `wait_ocr`, which would spend its whole budget re-reading a screen that answered on the first pass.
+
+        Args:
+            match: Pattern naming the mode's entry in the rail.
+
+        Returns:
+            True once the entry has been clicked, False when it could not be reached.
+        """
+        if showing := self.ocr(match=match, box=self.box.left):
+            self.click(showing[0], after_sleep=2)
+            return True
+        if not self.open_regular_commissions():
+            return False
+        return bool(self.wait_click_ocr(match=match, box=self.box.left, time_out=5, after_sleep=2))
+
     def is_main(self, recheck_time=0.0, esc=True):
         """Decide whether the home screen is showing.
 
@@ -749,6 +775,7 @@ class BaseGlobalTask(BaseGfTask):
             Exception: The home screen was not reached, raised by the fallback.
         """
         self.info_set('current_task', 'go_home')
+        self.parked = False
         for _ in range(HOME_BUTTON_PRESSES):
             self.click_relative(*HOME_BUTTON, after_sleep=2)
         # Polled by hand rather than with `wait_until`, which has no gap between checks and would spend
@@ -802,10 +829,20 @@ class BaseGlobalTask(BaseGfTask):
                 # one dropped OCR word is enough - and `go_home` opens with two clicks and their sleeps.
                 if not self.is_main(esc=False):
                     self.go_home()
+        self.leave_parked_screen()
         ending = f'finished, but these stopped early: {", ".join(failed)}.' if failed else 'complete.'
         self.log_info(f'{label} {ending}', notify=True)
 
-    def stop_flow(self, message, dump=None):
+    def leave_parked_screen(self):
+        """Return to the home screen if the last flow deliberately stopped somewhere else.
+
+        A flow is allowed to park on a screen the flow behind it starts from. The run as a whole has no next one to hand it to, so whatever the last flow
+        left up is cleared here. Every other ending already went home, and on those this costs nothing.
+        """
+        if self.parked:
+            self.go_home()
+
+    def stop_flow(self, message, dump=None, home=True):
         """Say why a flow is stopping, record the screen if it was not understood, and return to the home screen.
 
         Covers both endings a flow has short of finishing: something could not be found, and there was nothing to do. Both want the same three steps, and
@@ -815,6 +852,9 @@ class BaseGlobalTask(BaseGfTask):
             message: What to tell the user.
             dump: Name to save a frame under. Pass one only when the screen was not what was expected - an early exit that read the game correctly has
                 nothing worth keeping.
+            home: Whether to go back to the home screen. Pass False only from an exit that leaves the screen somewhere every flow behind it can start from,
+                as both `GlobalWeeklyTask` flows do by entering through `open_commission_mode`. The park is remembered, so a run that ends on one still
+                finishes at home.
 
         Returns:
             False, so a caller can `return self.stop_flow(...)` in one line.
@@ -822,7 +862,10 @@ class BaseGlobalTask(BaseGfTask):
         self.log_info(message, notify=True)
         if dump:
             self.dump_screen(dump)
-        self.go_home()
+        if home:
+            self.go_home()
+        else:
+            self.parked = True
         return False
 
     def ensure_main(self, recheck_time=1, time_out=30, esc=True):
@@ -837,6 +880,7 @@ class BaseGlobalTask(BaseGfTask):
             Exception: The home screen was not reached within `time_out`.
         """
         self.info_set('current_task', 'go_to_main')
+        self.parked = False
         if not self.wait_until(lambda: self.is_main(recheck_time=recheck_time, esc=esc), time_out=time_out):
             raise Exception('Could not reach the game home screen. Start the bot from the home screen.')
 

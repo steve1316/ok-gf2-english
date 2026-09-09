@@ -69,10 +69,8 @@ class GlobalWeeklyTask(BaseGlobalTask):
         Auto Mode does the fighting, so this spends attempts but never plays a battle itself.
         """
         self.info_set('current_task', 'boss_fight')
-        if not self.open_regular_commissions():
-            return self.stop_flow('Could not open Regular Commissions, skipping Boss Fight.')
-        if not self.wait_click_ocr(match=BOSS_FIGHT, box=self.box.left, time_out=5, after_sleep=2):
-            return self.stop_flow('Boss Fight is not available, skipping.')
+        if not self.open_commission_mode(BOSS_FIGHT):
+            return self.stop_flow('Could not reach Boss Fight in Regular Commissions, skipping.')
         # One read of the screen, used for both the tally and the Proceed on the card it brought up. Nothing is
         # clicked between them, so it is the same pixels either way.
         card = self.ocr(log=True)
@@ -82,7 +80,8 @@ class GlobalWeeklyTask(BaseGlobalTask):
             self.log_info('Could not read the Boss Fight attempts, so going on to look.')
             self.dump_screen('boss_fight_attempts_unreadable')
         elif attempts[0] >= attempts[1]:
-            return self.stop_flow(f'Boss Fight attempts are already at {attempts[0]}/{attempts[1]}, nothing to run.')
+            # Peak Value is on this same rail, so going home would walk back to a screen that never left.
+            return self.stop_flow(f'Boss Fight attempts are already at {attempts[0]}/{attempts[1]}, nothing to run.', home=False)
         # No sleep: the wait for the Auto button below covers this screen loading.
         if not self.click_card_button(BOSS_FIGHT, PROCEED, after_sleep=0, boxes=card):
             return self.stop_flow('Found no Boss Fight card to open, skipping.', dump='boss_fight_no_card')
@@ -100,10 +99,8 @@ class GlobalWeeklyTask(BaseGlobalTask):
         Running the Extreme Peak stages needs combat handling and is deliberately left out.
         """
         self.info_set('current_task', 'claim_peak_value')
-        if not self.open_regular_commissions():
-            return self.stop_flow('Could not open Regular Commissions, skipping Peak Value.')
-        if not self.wait_click_ocr(match=PEAK_VALUE, box=self.box.left, time_out=5, after_sleep=2):
-            return self.stop_flow('Peak Value Assessment is not available, skipping.')
+        if not self.open_commission_mode(PEAK_VALUE):
+            return self.stop_flow('Could not reach Peak Value Assessment in Regular Commissions, skipping.')
         # One read of the card, used for both the tally and the Proceed below it. Nothing is clicked
         # between them, so it is the same pixels either way.
         card = self.ocr(log=True)
@@ -113,7 +110,8 @@ class GlobalWeeklyTask(BaseGlobalTask):
             self.log_info('Could not read the Peak Value reward tally, so going on to look.')
             self.dump_screen('peak_value_rewards_unreadable')
         elif rewards[0] >= rewards[1]:
-            return self.stop_flow(f'Peak Value rewards are already at {rewards[0]}/{rewards[1]}, nothing to collect.')
+            # Parked for the same reason as Boss Fight above, so the two read the same way in either order.
+            return self.stop_flow(f'Peak Value rewards are already at {rewards[0]}/{rewards[1]}, nothing to collect.', home=False)
         # Extreme Peak sits directly below with an identical Proceed, so the card is named rather than the
         # button clicked by whichever OCR returned first.
         # No sleep: `open_periodic_returns` waits for the popup this leads to, and its budget covers the load.

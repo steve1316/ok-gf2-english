@@ -632,6 +632,9 @@ class GlobalDailyTask(BaseGlobalTask):
 
         The Loop runs for minutes at a time against a static screen, so the wait is a throttled poll rather than a tight one. Anything the Loop covers is
         deliberately not automated here.
+
+        Must start from the home screen. The Loop icon is unlabelled and clicked by position, so on any other screen that press lands on whatever happens to
+        be there. Nothing ahead of this flow may park - see the `home` argument of `stop_flow`.
         """
         self.info_set('current_task', 'start_loop')
         # No sleep: the wait below is for the screen this click opens, so it already covers the loading.
