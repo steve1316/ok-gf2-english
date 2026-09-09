@@ -266,7 +266,7 @@ msgstr "Delicious Cuisine"
 msgid "社区每日"
 msgstr "Community Daily Check-In"
 
-msgid "情报/战前补给"
+msgid "情报和战前补给"
 msgstr "Event Reward Track / Pre-Battle Supply"
 
 msgid "战前补给"
