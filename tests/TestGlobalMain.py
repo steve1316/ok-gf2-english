@@ -221,10 +221,79 @@ class TestWalkTimes(unittest.TestCase):
         """A setting naming fewer durations than the walk has keys shortens the walk rather than raising."""
         self.assertEqual([1.0, 0.0], self.walk_times('1.0', 2))
 
+    def test_every_walk_default_fits_the_single_line_editor(self):
+        """The settings panel picks its editor by how long the value is: 16 characters or fewer gets a one-line box, anything longer a multi-line one.
+
+        A walk timing is one short line and reads as a mistake in a box five times its height, so the defaults are written to two decimals. That is 10ms of
+        precision on a key held for whole seconds, which is finer than the walk can be measured by hand anyway.
+        """
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        for key, default, _ in daily.WALK_OPTIONS:
+            self.assertLessEqual(len(default), 16, f'{key} default {default!r} is {len(default)} characters and gets the tall editor')
+
     def test_a_non_numeric_setting_is_rejected(self):
         """Callers catch this to skip the station rather than crash the whole run."""
         with self.assertRaises(ValueError):
             self.walk_times('fast', 2)
+
+
+class TestReverseWalk(unittest.TestCase):
+    """Stations are chained inside one visit now, so the character walks back to the entrance rather than leaving and coming in again.
+
+    Every walk is timed from the entrance, so the way back is the way out played backwards - the keys in the opposite order, each swapped for the one that
+    undoes it, and the durations reversed to match.
+    """
+
+    def reverse_walk(self, keys, times):
+        return importlib.import_module('src.global.GlobalDailyTask').reverse_walk(keys, times)
+
+    def test_the_way_back_is_the_way_out_backwards(self):
+        """Tea Time walks left-forward-right. The last leg is undone first, so coming home is left-back-right with the durations in the opposite order."""
+        self.assertEqual((['a', 's', 'd'], [0.495, 1.25, 0.636]), self.reverse_walk(['a', 'w', 'd'], [0.636, 1.25, 0.495]))
+
+    def test_a_one_key_walk_reverses_to_its_opposite(self):
+        self.assertEqual((['w'], [0.747]), self.reverse_walk(['s'], [0.747]))
+
+    def test_reversing_twice_gives_back_the_original_walk(self):
+        """The property that makes chaining safe - a walk out and its walk back cancel exactly."""
+        keys, times = ['d', 's', 'd'], [0.948, 1.035, 3.083]
+        self.assertEqual((keys, times), self.reverse_walk(*self.reverse_walk(keys, times)))
+
+    def test_every_station_walks_keys_that_can_be_undone(self):
+        """A station walked with a key the reversal does not know would strand the character part way through the deck."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        for station in daily.STATIONS:
+            for key in station.keys:
+                self.assertIn(key, daily.OPPOSITE_KEYS, f'{station.label} holds {key!r}, which has no opposite to walk back with')
+
+
+class TestFlowerPatterns(unittest.TestCase):
+    """The flower answers with a list rather than a single prompt, and the entry below the one we want throws the grow away.
+
+    `Manage Flower` sits directly above `Make Into Hairflower`, which harvests the flower. The obvious pattern matches both, since Hairflower ends in the
+    word the wanted entry is named for.
+    """
+
+    def daily(self):
+        return importlib.import_module('src.global.GlobalDailyTask')
+
+    def test_manage_flower_matches_its_own_entry(self):
+        self.assertIsNotNone(self.daily().MANAGE_FLOWER.search('Manage Flower'))
+
+    def test_manage_flower_survives_ocr_dropping_the_second_word(self):
+        """Both other stations allow for OCR splitting a two-word prompt, and this one is read off a denser list than either."""
+        self.assertIsNotNone(self.daily().MANAGE_FLOWER.search('Manage'))
+
+    def test_manage_flower_never_matches_make_into_hairflower(self):
+        """Hairflower harvests the flower. Taking it instead of watering throws away every day of growth at once."""
+        self.assertIsNone(self.daily().MANAGE_FLOWER.search('Make Into Hairflower'))
+
+    def test_water_matches_the_button(self):
+        self.assertIsNotNone(self.daily().WATER.search('Water'))
+
+    def test_water_never_matches_the_collection_notice(self):
+        """The line "Can be collected after 1 day(s) of watering" runs along the bottom of the same screen."""
+        self.assertIsNone(self.daily().WATER.search('Can be collected after 1 day(s) of watering'))
 
 
 class _CardScreen:
@@ -575,8 +644,8 @@ class TestActiveDishes(unittest.TestCase):
 class TestActivityButtons(unittest.TestCase):
     """The Crew Deck activities end on screens where the wrong button is costly.
 
-    The dish's closing screen puts `To Battle!` beside `Confirm`, and the drink's confirmation puts `Cancel` beside it. Every pattern the flow clicks has to
-    miss the neighbour.
+    The dish's closing screen puts `To Battle!` beside `Confirm`, the drink's confirmation puts `Cancel` beside it, and the flower's interaction list puts
+    `Make Into Hairflower` directly below `Manage Flower`. Every pattern the flow clicks has to miss the neighbour.
     """
 
     def daily(self):
@@ -586,7 +655,10 @@ class TestActivityButtons(unittest.TestCase):
         """Every pattern `crew_deck` clicks by name, so a new one cannot quietly opt out of this check."""
         daily = self.daily()
         base = importlib.import_module('src.global.BaseGlobalTask')
-        return {'MAKE': daily.MAKE, 'NEXT': daily.NEXT, 'INVITE': daily.INVITE, 'CONFIRM': base.CONFIRM, 'SKIP': base.SKIP}
+        return {
+            'MAKE': daily.MAKE, 'NEXT': daily.NEXT, 'INVITE': daily.INVITE, 'MANAGE_FLOWER': daily.MANAGE_FLOWER, 'WATER': daily.WATER,
+            'CONFIRM': base.CONFIRM, 'SKIP': base.SKIP,
+        }
 
     def test_nothing_the_flow_clicks_matches_to_battle(self):
         """Starting a battle nobody asked for is the worst thing this flow could do."""
@@ -599,6 +671,17 @@ class TestActivityButtons(unittest.TestCase):
         """Cancel sits beside Confirm on the Caution dialog, and would silently make no drink at all."""
         for name, pattern in self.clickable_patterns().items():
             self.assertIsNone(pattern.search('Cancel'), f'{name} matches the Cancel button beside Confirm')
+
+    def test_nothing_the_flow_clicks_matches_make_into_hairflower(self):
+        """Hairflower sits one line below Manage Flower and harvests the flower, throwing away every day of growth at once."""
+        for name, pattern in self.clickable_patterns().items():
+            self.assertIsNone(pattern.search('Make Into Hairflower'), f'{name} matches the Hairflower entry, which throws the grow away')
+
+    def test_nothing_the_flow_clicks_matches_the_other_flower_entries(self):
+        """The rest of the flower's list only rearranges things, but clicking one leaves the flow on a screen it has no way back from."""
+        for entry in ('Set growth point', 'Formation', 'Florence'):
+            for name, pattern in self.clickable_patterns().items():
+                self.assertIsNone(pattern.search(entry), f'{name} matches {entry!r} in the flower list')
 
     def test_make_does_not_match_the_cooking_screens_prose(self):
         """The cooking screen reads "Cannot Make Dishes", which an unanchored Make would click."""
@@ -1278,6 +1361,15 @@ class _Deck:
         self.logged.append(message)
 
 
+# What the Crew Deck settings look like with everything switched on, so a test only states the part it cares about.
+DECK_CONFIG = {
+    'Tea Time Walk': '0.636-1.25-0.495',
+    'Delicious Cuisine Walk': '0.747',
+    'Water Flower Walk': '0.948-1.035-3.083',
+    'Water Flower': True,
+}
+
+
 class _Trips:
     """A stand-in for the daily task recording which stations the Crew Deck flow actually walked to.
 
@@ -1287,10 +1379,12 @@ class _Trips:
 
     crew_deck = GlobalDailyTask.crew_deck
 
-    def __init__(self, lit=None, config=None, can_enter=True):
+    def __init__(self, lit=None, config=None, can_enter=True, opens=True, walkable=True):
         self.lit = lit or {}
-        self.config = config or {'Tea Time Walk': '0.636-1.25-0.495', 'Delicious Cuisine Walk': '0.747'}
+        self.config = config or dict(DECK_CONFIG)
         self.can_enter = can_enter
+        self.opens = opens
+        self.walkable = walkable
         self.entries = 0
         self.exits = 0
         self.reads = 0
@@ -1321,8 +1415,12 @@ class _Trips:
     def press_keys_sequence(self, keys, times, sleep_between=0):
         self.walked.append(keys)
 
+    def in_walkable_deck(self):
+        return self.walkable
+
     def open_station(self, station):
         self.opened.append(station.label)
+        return self.opens
 
 
 class TestActivityBuffIcons(unittest.TestCase):
@@ -1369,20 +1467,6 @@ class TestActivityBuffIcons(unittest.TestCase):
         self.assertTrue(daily.buff_is_lit(self.fixture('crew_deck_food_buff_lit')))
         self.assertFalse(daily.buff_is_lit(self.fixture('crew_deck_food_buff_unlit')))
 
-    def test_the_measured_fraction_is_reported_alongside_the_verdict(self):
-        """A false reading silently skips an activity for the day, so the number behind the verdict has to be in the log to diagnose one."""
-        daily = self.daily()
-        self.assertGreater(daily.blue_fraction(self.fixture('crew_deck_drink_buff_lit')), daily.BUFF_LIT_FRACTION)
-        self.assertEqual(0.0, daily.blue_fraction(self.fixture('crew_deck_food_buff_unlit')))
-
-    def test_a_real_reading_is_nowhere_near_the_threshold(self):
-        """Lit icons measure about 0.19 to 0.33 and every unlit one exactly 0.0, so the threshold sits in open space rather than between close neighbours."""
-        daily = self.daily()
-        for name in ('crew_deck_drink_buff_lit', 'crew_deck_food_buff_lit'):
-            self.assertGreater(daily.blue_fraction(self.fixture(name)), daily.BUFF_LIT_FRACTION * 1.5, f'{name} should read solidly lit')
-        for name in ('crew_deck_food_buff_unlit', 'crew_deck_food_buff_unlit_lounge', 'crew_deck_drink_buff_unlit_lounge'):
-            self.assertEqual(0.0, daily.blue_fraction(self.fixture(name)), f'{name} has no saturated blue in it at all')
-
     def test_an_unlit_icon_over_a_blue_lit_room_is_not_lit(self):
         """The regression this whole check nearly failed on.
 
@@ -1409,10 +1493,85 @@ class TestActivityBuffIcons(unittest.TestCase):
         """An empty answer walks every station, which is the old behaviour. Answering False for each would skip the lot."""
         self.assertEqual({}, _Deck(None).read_activity_buffs())
 
-    def test_every_station_carries_an_icon(self):
-        """A new station cannot quietly opt out of the check, the same way it cannot opt out of a walk setting."""
+    def test_the_measured_fraction_is_reported_alongside_the_verdict(self):
+        """A false reading silently skips an activity for the day, so the number behind the verdict has to be in the log to diagnose one."""
+        daily = self.daily()
+        self.assertGreater(daily.blue_fraction(self.fixture('crew_deck_drink_buff_lit')), daily.BUFF_LIT_FRACTION)
+        self.assertEqual(0.0, daily.blue_fraction(self.fixture('crew_deck_food_buff_unlit')))
+
+    def test_a_real_reading_is_nowhere_near_the_threshold(self):
+        """Lit icons measure about 0.19 to 0.33 and every unlit one exactly 0.0, so the threshold sits in open space rather than between close neighbours."""
+        daily = self.daily()
+        for name in ('crew_deck_drink_buff_lit', 'crew_deck_food_buff_lit'):
+            self.assertGreater(daily.blue_fraction(self.fixture(name)), daily.BUFF_LIT_FRACTION * 1.5, f'{name} should read solidly lit')
+        for name in ('crew_deck_food_buff_unlit', 'crew_deck_food_buff_unlit_lounge', 'crew_deck_drink_buff_unlit_lounge'):
+            self.assertEqual(0.0, daily.blue_fraction(self.fixture(name)), f'{name} has no saturated blue in it at all')
+
+    def test_every_station_carries_an_icon_or_says_it_has_none(self):
+        """A station either names a region to read or opts out in so many words with None. A wrong-length tuple is neither, and would read the wrong corner."""
         for station in self.daily().STATIONS:
-            self.assertEqual(4, len(station.buff_icon), f'{station.label} needs a left-top-right-bottom icon region')
+            if station.buff_icon is not None:
+                self.assertEqual(4, len(station.buff_icon), f'{station.label} needs a left-top-right-bottom icon region')
+
+    def test_a_station_without_an_icon_is_left_out_of_the_reading(self):
+        """Watering grants no buff, so there is no icon to read. Reporting it as not up would be right by accident, and as up would skip the walk forever."""
+        lit = _Deck(self.fixture('crew_deck_drink_buff_only')).read_activity_buffs()
+        self.assertNotIn('Water Flower', lit)
+
+
+class TestWaterFlowerStation(unittest.TestCase):
+    """The flower is the one station with nothing at the entrance to say it is already done.
+
+    Tea Time and Delicious Cuisine both light an icon in the corner, so a spent one costs a look rather than a trip. Watering grants no buff and lights
+    nothing, so the only thing that says the flower is watered is the counter on its own screen, which sits behind the walk.
+    """
+
+    def daily(self):
+        return importlib.import_module('src.global.GlobalDailyTask')
+
+    def station(self):
+        found = [station for station in self.daily().STATIONS if station.label == 'Water Flower']
+        self.assertEqual(1, len(found), 'STATIONS should hold exactly one Water Flower entry')
+        return found[0]
+
+    def test_it_walks_the_recorded_route(self):
+        """Measured with tools/record_walk.py against the pot moved to the Hangar Passage: right, back, right again."""
+        self.assertEqual(['d', 's', 'd'], self.station().keys)
+
+    def test_it_is_visited_last(self):
+        """It is the only station that always costs its walk, so the two that can be ruled out from the entrance are tried first."""
+        self.assertEqual('Water Flower', self.daily().STATIONS[-1].label)
+
+    def test_it_carries_no_buff_icon(self):
+        self.assertIsNone(self.station().buff_icon)
+
+    def test_its_default_walk_names_a_duration_for_every_key(self):
+        """A default naming fewer durations than the walk has keys would pad with taps and land the character short of the flower."""
+        station = self.station()
+        defaults = {key: value for key, value, _ in self.daily().WALK_OPTIONS}
+        self.assertEqual(len(station.keys), len(defaults[station.config_key].split('-')))
+
+    def test_every_station_toggle_names_a_setting_that_exists(self):
+        """A toggle with no setting behind it reads as off on every run, so the station silently never happens and nothing says why."""
+        daily = self.daily()
+        defined = {key for key, _, _ in daily.STATION_TOGGLES}
+        for station in daily.STATIONS:
+            if station.toggle is not None:
+                self.assertIn(station.toggle, defined, f'{station.label} names a toggle no setting defines')
+
+    def test_every_toggle_setting_belongs_to_a_station(self):
+        """The other way round is a knob in the settings panel that switches nothing."""
+        daily = self.daily()
+        claimed = {station.toggle for station in daily.STATIONS}
+        for key, _, _ in daily.STATION_TOGGLES:
+            self.assertIn(key, claimed, f'{key!r} is a setting no station reads')
+
+    def test_it_is_gated_behind_a_setting_that_starts_off(self):
+        """The pot has to be moved to the Hangar Passage by hand first, so this cannot be on for people who have not done that."""
+        toggle = self.station().toggle
+        self.assertIsNotNone(toggle, 'Water Flower needs a setting to gate it')
+        defaults = {key: default for key, default, _ in self.daily().STATION_TOGGLES}
+        self.assertIs(False, defaults[toggle], 'the pot has to be moved by hand, so this cannot default to on')
 
 
 class TestCrewDeckTrips(unittest.TestCase):
@@ -1423,22 +1582,22 @@ class TestCrewDeckTrips(unittest.TestCase):
     """
 
     def test_both_buffs_up_costs_one_entry_and_no_walking(self):
-        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': True})
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': True}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
         self.assertEqual(1, task.entries)
         self.assertEqual([], task.walked)
         self.assertEqual([], task.opened)
         self.assertEqual(1, task.exits, 'the deck still has to be left once')
 
-    def test_no_buffs_up_walks_to_both_as_before(self):
-        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False})
+    def test_no_buffs_up_walks_to_both_inside_one_entry(self):
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
         self.assertEqual(['Tea Time', 'Delicious Cuisine'], task.opened)
-        self.assertEqual(2, task.entries, 'each walk is timed from the entrance, so a station that ran re-enters for the next one')
+        self.assertEqual(1, task.entries, 'the walk back to the entrance replaces leaving and coming in again between stations')
         self.assertEqual(1, task.reads, 'the icons are read once for the run, not once per entry')
 
     def test_one_buff_up_skips_only_its_own_trip(self):
-        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False})
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
         self.assertEqual(['Delicious Cuisine'], task.opened)
         self.assertEqual([['s']], task.walked)
@@ -1446,7 +1605,7 @@ class TestCrewDeckTrips(unittest.TestCase):
 
     def test_the_second_buff_being_up_costs_no_entry_of_its_own(self):
         """The reading is already in hand by then, so the spent station has to be ruled out before the deck is opened rather than after."""
-        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': True})
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': True}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
         self.assertEqual(['Tea Time'], task.opened)
         self.assertEqual(1, task.entries, 'entering only to read a cached answer and back straight out is the trip this saves')
@@ -1461,9 +1620,219 @@ class TestCrewDeckTrips(unittest.TestCase):
     def test_a_broken_walk_setting_skips_its_station_without_entering(self):
         """The setting is checked before the deck is opened, so a bad one costs nothing and leaves the other station alone."""
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False},
-                      config={'Tea Time Walk': 'not-a-number', 'Delicious Cuisine Walk': '0.747'})
+                      config={**DECK_CONFIG, 'Water Flower': False, 'Tea Time Walk': 'not-a-number'})
         task.crew_deck()
         self.assertEqual(['Delicious Cuisine'], task.opened)
+        self.assertEqual(1, task.entries)
+
+
+class _Flower:
+    """A stand-in for the daily task showing a scripted flower screen, recording what the watering flow clicks.
+
+    Borrows the real methods the way the other Crew Deck harnesses do, since nothing here needs a live executor - the flow only reads one counter, clicks one
+    button, and backs out.
+    """
+
+    water_flower = GlobalDailyTask.water_flower
+    uses_left = GlobalDailyTask.uses_left
+    close_flower_screen = GlobalDailyTask.close_flower_screen
+
+    def __init__(self, counter='0/1', has_button=True, walkable_after=0):
+        self.counter = counter
+        self.has_button = has_button
+        self.walkable_after = walkable_after
+        self.clicked = []
+        self.backs = 0
+        self.logged = []
+        self.dumped = []
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def sleep(self, seconds):
+        pass
+
+    def dump_screen(self, name):
+        self.dumped.append(name)
+
+    def box_of_screen(self, *fractions):
+        return fractions
+
+    def ocr(self, box=None, **kwargs):
+        return [Box(1500, 650, 60, 30, name=self.counter)] if self.counter else []
+
+    def in_walkable_deck(self):
+        return self.backs >= self.walkable_after
+
+    def back(self, after_sleep=0):
+        self.backs += 1
+
+    def wait_until(self, condition, time_out=0):
+        return condition()
+
+    def wait_click_ocr(self, match=None, box=None, time_out=0, **kwargs):
+        if not self.has_button:
+            return None
+        self.clicked.append('Water')
+        return Box(1500, 540, 100, 40, name='Water')
+
+
+class TestWaterFlower(unittest.TestCase):
+    """Watering is the one activity with no scene and no reward summary behind it - the counter under the button simply ticks over.
+
+    That is also the only thing that says the flower has been watered today, since watering grants no buff and lights nothing at the entrance.
+    """
+
+    def test_it_waters_when_the_day_is_unspent(self):
+        task = _Flower(counter='0/1')
+        self.assertTrue(task.water_flower())
+        self.assertEqual(['Water'], task.clicked)
+
+    def test_it_does_not_water_twice_in_a_day(self):
+        """The counter reads used-of-allowed, the same way the station prompts do, so 1/1 means today's watering is already gone."""
+        task = _Flower(counter='1/1')
+        self.assertTrue(task.water_flower())
+        self.assertEqual([], task.clicked, 'clicking a spent Water button spends the trip through its screens for nothing')
+
+    def test_an_unreadable_counter_waters_rather_than_skipping(self):
+        """Unknown is not spent. Skipping on a counter OCR could not read would quietly stop watering altogether."""
+        task = _Flower(counter='')
+        self.assertTrue(task.water_flower())
+        self.assertEqual(['Water'], task.clicked)
+
+    def test_a_missing_button_is_reported_rather_than_assumed_done(self):
+        """A screen with no Water button is not a watered flower, and the run should say what was on screen instead."""
+        task = _Flower(has_button=False)
+        self.assertFalse(task.water_flower())
+        self.assertTrue(task.dumped, 'the unexplained screen should be kept')
+
+    def test_it_backs_out_to_the_walkable_deck(self):
+        """The walk back to the entrance starts from the deck, not from the flower screen, so this has to close itself."""
+        task = _Flower(walkable_after=1)
+        task.water_flower()
+        self.assertEqual(1, task.backs)
+
+    def test_it_keeps_pressing_while_the_animation_swallows_escape(self):
+        """Watering plays an animation that eats Escape for several seconds, so the press that closes the screen is rarely the first one.
+
+        A live run spent its whole budget inside that animation and returned having closed nothing, leaving the flower screen up for the next step to trip
+        over. Nothing said so, because the answer was never looked at.
+        """
+        task = _Flower(walkable_after=3)
+        task.water_flower()
+        self.assertEqual(3, task.backs)
+
+    def test_a_screen_that_will_not_close_says_so(self):
+        """It used to give up silently. The run then carried on believing it was standing on the walkable deck when it was not."""
+        task = _Flower(walkable_after=99)
+        task.water_flower()
+        self.assertTrue(any('did not close' in message for message in task.logged), task.logged)
+
+    def test_it_stops_backing_out_once_the_deck_is_up(self):
+        """Escape at the walkable deck raises the leave-the-deck confirmation, which is the opposite of what the next walk needs."""
+        task = _Flower(walkable_after=0)
+        task.water_flower()
+        self.assertEqual(0, task.backs)
+
+
+class TestWaterScreenRegions(unittest.TestCase):
+    """The flower screen draws Water and Fertilize side by side, each a round button with a counter underneath reading exactly the same shape.
+
+    Nothing on this screen can be told apart by its text, so both regions are measured. A band that drifts right answers with the fertilizer's count, and one
+    that drifts down finds the word Water where a number should be. Neither shows up as an error - they just read the wrong thing.
+    """
+
+    # Where the Fertilize column starts, measured off the same 1920x1080 capture. Nothing water-related may reach it.
+    FERTILIZE_LEFT_EDGE = 0.88
+
+    def daily(self):
+        return importlib.import_module('src.global.GlobalDailyTask')
+
+    def bands(self):
+        daily = self.daily()
+        return {'button': daily.WATER_BUTTON_BAND, 'counter': daily.WATER_COUNTER_BAND}
+
+    def test_neither_region_reaches_the_fertilize_column(self):
+        """Fertilize's own counter reads 0/1 too, and taking it for the water one would skip watering on any day the user has no fertilizer."""
+        for name, band in self.bands().items():
+            self.assertLess(band[2], self.FERTILIZE_LEFT_EDGE, f'the {name} region overlaps the Fertilize column')
+
+    def test_the_counter_sits_below_the_button_without_overlapping_it(self):
+        """Reading the button's region for a counter finds the word Water, which carries no number and reads as unknown every time."""
+        self.assertLessEqual(self.bands()['button'][3], self.bands()['counter'][1])
+
+    def test_every_region_is_a_left_top_right_bottom_box(self):
+        for name, band in self.bands().items():
+            self.assertEqual(4, len(band), f'the {name} region needs four fractions')
+            self.assertLess(band[0], band[2], f'the {name} region has no width')
+            self.assertLess(band[1], band[3], f'the {name} region has no height')
+
+
+class TestCrewDeckChaining(unittest.TestCase):
+    """Stations share one visit, walking back to the entrance between them instead of leaving and coming in again.
+
+    Every walk is timed from the entrance, so the character has to be standing there before the next one starts. Walking back costs a few seconds of held
+    keys. Leaving and re-entering costs two screen loads, which is what this replaces. The catch is that position is then only ever known by dead reckoning,
+    so anything that casts doubt on it - a walk that did not land, a deck that is not walkable - falls back on re-entering, which is the one way to be sure.
+    """
+
+    def test_the_walk_back_undoes_the_walk_out(self):
+        """Tea Time walks left-forward-right, so it comes home left-back-right before the kitchen walk starts."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
+        task.crew_deck()
+        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s']], task.walked)
+
+    def test_the_last_station_never_walks_back(self):
+        """Nothing follows it, so the walk home would be held keys spent on nothing before backing out anyway."""
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
+        task.crew_deck()
+        self.assertEqual([['s']], task.walked)
+
+    def test_a_station_that_never_opened_re_enters_instead_of_walking_back(self):
+        """A walk that did not land leaves the character somewhere unknown, and reversing an unknown position compounds the error rather than undoing it."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, opens=False)
+        task.crew_deck()
+        self.assertEqual([['a', 'w', 'd'], ['s']], task.walked, 'the failed walk is not reversed')
+        self.assertEqual(2, task.entries, 're-entering is the only way back to a known position')
+
+    def test_a_deck_that_is_not_walkable_re_enters_instead_of_walking_back(self):
+        """A scene still playing swallows movement keys, so the walk back would go nowhere and the next walk would start from the wrong place."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, walkable=False)
+        task.crew_deck()
+        self.assertEqual(2, task.entries)
+        self.assertEqual([['a', 'w', 'd'], ['s']], task.walked)
+
+    def test_nothing_is_walked_back_when_no_station_is_left_to_visit(self):
+        """The second station's buff is already up, so walking home only to back out is the trip this saves."""
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': True}, config={**DECK_CONFIG, 'Water Flower': False})
+        task.crew_deck()
+        self.assertEqual([['a', 'w', 'd']], task.walked)
+        self.assertEqual(1, task.exits)
+
+
+class TestWaterFlowerTrips(unittest.TestCase):
+    """The flower is off until someone has moved the pot, and it is the one station a buff icon cannot rule out."""
+
+    def test_the_flower_is_left_alone_while_its_setting_is_off(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': True}, config={**DECK_CONFIG, 'Water Flower': False})
+        task.crew_deck()
+        self.assertEqual([], task.walked)
+        self.assertEqual([], task.opened)
+
+    def test_the_flower_costs_its_walk_even_with_both_buffs_up(self):
+        """Watering lights no icon, so there is nothing at the entrance that could rule the trip out the way it does for the other two."""
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': True})
+        task.crew_deck()
+        self.assertEqual(['Water Flower'], task.opened)
+        self.assertEqual([['d', 's', 'd']], task.walked)
+        self.assertEqual(1, task.entries)
+
+    def test_the_flower_is_reached_from_the_entrance_after_another_station(self):
+        """Its timings were measured from the entrance, so the kitchen walk has to be undone before the flower walk starts."""
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False})
+        task.crew_deck()
+        self.assertEqual(['Delicious Cuisine', 'Water Flower'], task.opened)
+        self.assertEqual([['s'], ['w'], ['d', 's', 'd']], task.walked)
         self.assertEqual(1, task.entries)
 
 
@@ -1578,10 +1947,11 @@ class TestSingleFlowConfig(unittest.TestCase):
         task = types.SimpleNamespace(
             flow=flow,
             default_config=({key: True for key, _, _ in daily.FLOWS} | {key: default for key, default, _ in daily.WALK_OPTIONS}
+                            | {key: default for key, default, _ in daily.STATION_TOGGLES}
                             | {daily.BANNER_SLOTS: daily.BANNER_SLOTS_DEFAULT}),
             config_description={},
             default_config_group={
-                'Crew Deck': [key for key, _, _ in daily.WALK_OPTIONS],
+                'Crew Deck': [key for key, _, _ in daily.WALK_OPTIONS] + [key for key, _, _ in daily.STATION_TOGGLES],
                 'Run Event Supply': [daily.BANNER_SLOTS],
             },
         )
@@ -1593,6 +1963,19 @@ class TestSingleFlowConfig(unittest.TestCase):
         remaining = self.strip('crew_deck')
         for key, _, _ in daily.WALK_OPTIONS:
             self.assertIn(key, remaining, f'the Crew Deck task needs {key!r} - it is how the walk is tuned')
+
+    def test_the_crew_deck_task_keeps_its_station_toggles(self):
+        """Water Flower ships off, so the task whose whole job is checking the Crew Deck has to be able to switch it on."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        remaining = self.strip('crew_deck')
+        for key, _, _ in daily.STATION_TOGGLES:
+            self.assertIn(key, remaining, f'the Crew Deck task needs {key!r} to switch that station on')
+
+    def test_no_other_task_offers_the_station_toggles(self):
+        """On a task that never walks the deck they would be dead knobs, which is what the stripping is for."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        for key, _, _ in daily.STATION_TOGGLES:
+            self.assertNotIn(key, self.strip('shopping'))
 
     def test_the_event_supply_task_keeps_its_banner_slots(self):
         """Which banner to open is the one thing that task cannot work out for itself."""
