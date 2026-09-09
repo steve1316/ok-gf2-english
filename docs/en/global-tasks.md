@@ -164,6 +164,12 @@ settings at all.
 | `Run: Claim Boundary Push` | `Claim Boundary Push Rewards` |
 | `Run: Claim Peak Value` | `Claim Peak Value Rewards` |
 | `Run: Crew Deck` | `Crew Deck` - makes the drink, cooks the dish, waters the flower |
+| `Run: Buy Wishlist Items` | `Buy Wishlist Items` - spends in-game currency, never real money |
+| `Run: Boss Fight` | `Boss Fight` - spends the remaining attempts, and the Expenditure they cost |
+
+The last two are the ones to be careful with. `Buy Wishlist Items` is off by default in Global Daily
+because it is the only flow that spends anything, but `Run: Buy Wishlist Items` always runs it - there
+is no toggle to leave off. `Run: Boss Fight` likewise spends every attempt it finds.
 
 Start with **`Run: Go Home`**. It buys nothing, fights nothing and spends nothing - it only proves the
 bot can recognise the home screen and find its way back, which every other task depends on.

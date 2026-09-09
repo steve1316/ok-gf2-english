@@ -97,6 +97,8 @@ flag (see [Command-line arguments](#command-line-arguments)).
 | 13 | Run: Claim Boundary Push | Runs only the Boundary Push collection |
 | 14 | Run: Claim Peak Value | Runs only the Peak Value collection |
 | 15 | Run: Crew Deck | Runs only the Crew Deck activities |
+| 16 | Run: Buy Wishlist Items | Runs only the shop Wishlist purchase. Spends in-game currency |
+| 17 | Run: Boss Fight | Runs only the Boss Fight step. Spends Expenditure |
 
 The numbering starts at 7 because positions 1-6 belong to upstream's CN tasks, which still ship and
 are hidden unless **Region** is set to `CN`. They are documented in
