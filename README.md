@@ -145,8 +145,26 @@ The setting is `Delicious Cuisine Walk`, nested under the `Crew Deck` toggle. It
 
 Format: `{seconds holding S}`
 
-> On Global the `Crew Deck` flow ships **switched off**, because it needs walk timings that suit your
-> setup. Measure them, then turn it on.
+---
+
+### 3. Water Flower
+
+Walking to the flower pot instead. This route holds `D`, then `S`, then `D`.
+
+Format: `{seconds holding D}-{seconds holding S}-{seconds holding D}`
+
+The setting is `Water Flower Walk`, nested under the `Crew Deck` toggle. It defaults to
+`0.95-1.03-3.08`.
+
+Watering is switched on by its own `Water Flower` setting, which ships **off** - it needs one thing
+done by hand first:
+
+> **Move the flower pot from the Armory Passage to the Hangar Passage.** The walk is timed from the
+> Hangar Passage, so if the pot is still where it starts the bot walks into empty space and reports
+> that it found no prompt.
+
+All three stations share a single trip into the Crew Deck. Each walk is timed from the entrance, so
+after a station the bot walks back the way it came instead of leaving and re-entering.
 
 ---
 
