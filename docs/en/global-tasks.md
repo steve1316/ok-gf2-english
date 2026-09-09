@@ -28,11 +28,16 @@ Runs each enabled step in order, starting from the home screen. Every step is a 
 | `Claim Free Packs` | Claims the shop supply boxes that are currently free |
 | `Run Event Supply` | Auto-battles the last Supply stage of each running event, spending as much Expenditure as it can |
 | `Claim Boundary Push Rewards` | Collects the Breakthrough rewards under Commissions |
-| `Crew Deck` | Visits Tea Time at the coffee machine and Delicious Cuisine at the kitchen |
+| `Crew Deck` | Visits Tea Time at the coffee machine, Delicious Cuisine at the kitchen, and optionally waters the flower |
 
-`Crew Deck` ships **switched off**, because it walks to each station on a timer and those timings
-depend on where your character spawns. Measure your own before enabling it - see
+`Crew Deck` walks to each station on a timer, and those timings depend on where your character
+spawns, so the defaults are a starting guess rather than an answer. Measure your own - see
 [Walk timings](#walk-timings).
+
+All three stations are visited in a **single trip** into the deck. Every walk is timed from the
+entrance, so after each station the bot walks back the way it came rather than leaving and coming in
+again. If a walk does not land where it should, it backs out and re-enters to get back to a known
+spot instead of guessing.
 
 ### Steps that stop early
 
@@ -45,8 +50,12 @@ Each step checks whether its work is already done before spending anything:
   it is reported and skipped the same way - see [Event banners](#event-banners).
 - **Claim Boundary Push Rewards** reads the Breakthrough card's reward progress and stops if it is
   already complete.
-- **Crew Deck** reads the counter on each station's prompt, so a station already used today is
-  skipped, and it checks how many dishes are already in effect before cooking another.
+- **Crew Deck** reads the buff icons in the corner of the deck the moment it arrives, so a station
+  already used today costs a glance rather than the walk out to it, and it checks how many dishes are
+  already in effect before cooking another. `Water Flower` is the exception - watering grants no buff,
+  so there is nothing to read from the entrance and that one always costs its walk. It reads the
+  counter under the `Water` button once it gets there and leaves the flower alone if it is already
+  watered.
 
 ---
 
@@ -103,12 +112,13 @@ this - it is picked up from the page.
 ## Walk timings
 
 The Crew Deck is a walkable 3D area, so the bot reaches each station by holding movement keys for a
-fixed time. Two settings hold those durations, nested under the `Crew Deck` toggle:
+fixed time. Three settings hold those durations, nested under the `Crew Deck` toggle:
 
 | Setting | Route | Default |
 |---|---|---|
 | `Tea Time Walk` | holds `A`, `W`, then `D` | `0.636-1.25-0.495` |
 | `Delicious Cuisine Walk` | holds `S` | `0.747` |
+| `Water Flower Walk` | holds `D`, `S`, then `D` | `0.95-1.03-3.08` |
 
 The defaults came from one machine and one spawn point, so treat them as a starting guess. To measure
 your own, run the recorder from the repository root:
@@ -120,6 +130,21 @@ python tools/record_walk.py
 Switch to the game, walk from the Crew Deck entrance to the station by hand, then press Esc. It
 prints the durations it timed, names the setting they belong to, and tells you if the route you
 walked is not one the bot knows. Backspace clears a fluffed attempt without restarting it.
+
+---
+
+## Watering the flower
+
+`Water Flower` is a fourth setting under `Crew Deck`, and it ships **switched off**. It needs a
+one-time bit of setup you have to do by hand:
+
+**Move the flower pot to the Hangar Passage.** It sits in the Armory Passage by default, and
+`Water Flower Walk` is timed from the Hangar Passage. Leave the pot where it starts and the bot walks
+into empty space, finds no prompt, and says so.
+
+Once the pot has been moved and the setting is on, the bot walks to the pot, opens `Manage Flower`,
+and presses `Water` if the day's watering has not been used. It never touches `Make Into Hairflower`,
+which sits directly below `Manage Flower` in the same list and would harvest the flower instead.
 
 ---
 
@@ -138,10 +163,20 @@ settings at all.
 | `Run: Event Supply` | `Run Event Supply` |
 | `Run: Claim Boundary Push` | `Claim Boundary Push Rewards` |
 | `Run: Claim Peak Value` | `Claim Peak Value Rewards` |
-| `Run: Crew Deck` | `Crew Deck` |
+| `Run: Crew Deck` | `Crew Deck` - makes the drink, cooks the dish, waters the flower |
+| `Run: Buy Wishlist Items` | `Buy Wishlist Items` - spends in-game currency, never real money |
+| `Run: Boss Fight` | `Boss Fight` - spends the remaining attempts, and the Expenditure they cost |
+
+The last two are the ones to be careful with. `Buy Wishlist Items` is off by default in Global Daily
+because it is the only flow that spends anything, but `Run: Buy Wishlist Items` always runs it - there
+is no toggle to leave off. `Run: Boss Fight` likewise spends every attempt it finds.
 
 Start with **`Run: Go Home`**. It buys nothing, fights nothing and spends nothing - it only proves the
 bot can recognise the home screen and find its way back, which every other task depends on.
+
+Each Crew Deck activity is once a day, so `Run: Crew Deck` spends the drink, the dish and the day's
+watering every time. A walk that stops short of its station reports that it found no prompt, which is
+what tells you a timing needs adjusting.
 
 ---
 

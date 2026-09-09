@@ -108,7 +108,9 @@ def describe(presses):
         presses: The `(key, hold, gap)` list from `record`.
     """
     keys = [key for key, _, _ in presses]
-    setting = '-'.join(f'{hold:.3f}'.rstrip('0').rstrip('.') for _, hold, _ in presses)
+    # Two decimals, not three. 10ms is finer than a walk can be timed by hand, and the settings panel gives
+    # anything longer than 16 characters a multi-line editor five times the height of the line it holds.
+    setting = '-'.join(f'{hold:.2f}'.rstrip('0').rstrip('.') for _, hold, _ in presses)
     gaps = [gap for _, _, gap in presses if gap is not None]
     print(f'\nSequence: {" ".join(keys)}')
     print(f'Setting:  {setting}')

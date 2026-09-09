@@ -100,9 +100,13 @@ Platoon's **Essential Tasks** is a Platoon-only list. It is a different thing fr
 `公共区` and `活动层` both become **Crew Deck**. Chinese separates the menu entry from the walkable
 level, English does not, so let context carry the difference.
 
-The Crew Deck is a walkable 3D area. That is why the Tea Time and Delicious Cuisine options are
-key-hold durations: the bot is walking your character to the coffee machine and to the kitchen, so
-the timings depend on where your character happens to be standing.
+The Crew Deck is a walkable 3D area. That is why the Tea Time, Delicious Cuisine and Water Flower
+options are key-hold durations: the bot is walking your character to the coffee machine, to the
+kitchen and to the flower pot, so the timings depend on where your character happens to be standing.
+
+`浇花` is the **Manage Flower** entry, which is the first line of the list the pot offers. The line
+below it, **Make Into Hairflower**, harvests the flower rather than watering it - the two must never
+be confused, in translation or in a pattern that matches one of them.
 
 ## Event
 
@@ -175,9 +179,11 @@ only ever run against the English client.
 | Run Event Supply | Global Daily setting |
 | Event Banner Slots | Which home screen banners to open, nested under `Run Event Supply` |
 | Claim Boundary Push Rewards | Global Daily setting, same label as the CN one above |
-| Crew Deck | Global Daily setting, off by default |
+| Crew Deck | Global Daily setting |
 | Tea Time Walk | Walk timing, nested under `Crew Deck` |
 | Delicious Cuisine Walk | Walk timing, nested under `Crew Deck` |
+| Water Flower Walk | Walk timing, nested under `Crew Deck` |
+| Water Flower | Switches the flower station on, nested under `Crew Deck`, off by default |
 | Claim Peak Value Rewards | Global Weekly setting |
 | Run: Go Home, Run: Start Loop, Run: Claim Free Packs, Run: Event Supply, Run: Claim Boundary Push, Run: Claim Peak Value, Run: Crew Deck | One task each, running a single flow |
 

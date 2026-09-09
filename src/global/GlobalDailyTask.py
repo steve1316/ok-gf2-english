@@ -213,6 +213,16 @@ TEA_TIME = re.compile(r'Tea Time', re.I)
 # The second alternative stands alone because OCR drops the leading word of a two-word prompt often enough.
 DELICIOUS_CUISINE = re.compile(r'Delicious Cuisine|Cuisine', re.I)
 
+# The flower answers with a list rather than a single prompt: Manage Flower, Make Into Hairflower, Set
+# growth point, Formation, and the doll's own name. Hairflower harvests the flower, throwing away every
+# day of growth, and it ends in the word the wanted entry is named for - so a bare `Flower` matches the
+# one entry this must never click. Spelled out in full, with the bare leading word anchored so it covers
+# OCR dropping the second word without reaching Hairflower.
+MANAGE_FLOWER = re.compile(r'Manage\s*Flower|^Manage$', re.I)
+
+# Anchored, because the same screen carries "Can be collected after 1 day(s) of watering" along its bottom.
+WATER = re.compile(r'^Water$', re.I)
+
 
 # Anchored, both of them. The cooking screen carries the words "Cannot Make Dishes" in its preview panel,
 # which an unanchored Make would match.
@@ -257,6 +267,21 @@ SCENE_RECHECK_TIME_OUT = 0.5
 # the dish is only worth the buff it gives - so this takes the first two rather than reading the grid.
 INGREDIENT_SPOTS = ((0.236, 0.283), (0.308, 0.283))
 
+# The Water button and the counter underneath it, measured off a 1920x1080 capture. Both are narrow on
+# purpose: Fertilize sits immediately to the right as the same round button over the same shape of counter,
+# so a band wide enough to reach it would answer with the fertilizer's count instead. They are split top
+# from bottom for the same reason - the button's region holds the word Water and no number at all.
+WATER_BUTTON_BAND = (0.74, 0.44, 0.87, 0.57)
+WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
+
+# How many times to press Escape getting off the flower screen, and how long to give the deck to come back
+# after each press. Watering plays no scene, but it does play an animation that swallows Escape for several
+# seconds - a live run spent three presses inside one and closed nothing - so the presses are spaced by
+# waiting for the deck rather than by a flat sleep. That returns the moment the animation ends and still
+# covers a longer one.
+MAX_FLOWER_CLOSES = 3
+FLOWER_CLOSE_TIME_OUT = 3
+
 # (config key, default, settings text). Durations rather than coordinates, because the walk is the part
 # that varies between setups and it is the only part a user can usefully tune.
 WALK_OPTIONS = (
@@ -264,6 +289,17 @@ WALK_OPTIONS = (
      'How long to hold each movement key walking from the Crew Deck entrance to the coffee machine, as left-forward-right in seconds.'),
     ('Delicious Cuisine Walk', '0.747',
      'How long to hold the back key walking from the Crew Deck entrance to the kitchen, in seconds.'),
+    ('Water Flower Walk', '0.95-1.03-3.08',
+     'How long to hold each movement key walking from the Crew Deck entrance to the flower pot, as right-back-right in seconds.'),
+)
+
+# Stations that have to be asked for, in the same shape as `WALK_OPTIONS`. Only the flower needs one: the
+# pot lives in the Armory Passage by default and the walk is timed from the Hangar Passage, so this is off
+# until someone has actually moved it. The other two stations are always worth visiting and take no toggle.
+STATION_TOGGLES = (
+    ('Water Flower', False,
+     'Waters the flower pot for its daily growth. Move the pot to the Hangar Passage first - the walk is timed from there, and the bot will walk into '
+     'empty space if the pot is still in the Armory Passage.'),
 )
 
 # How long to give a screen to appear after the click that opens it. These waits re-read flat out, so a
@@ -287,6 +323,10 @@ STATION_PROMPT_TIME_OUT = 4
 DECK_KEY_HINTS = ['Esc', 'P', 'M', 'F1', 'F2', 'F3', 'F4']
 DECK_KEYS_NEEDED = 5
 
+# What undoes each movement key. Stations are chained inside one visit, so the character walks back to the
+# entrance between them rather than leaving and coming in again, and every walk is timed from that entrance.
+OPPOSITE_KEYS = {'w': 's', 's': 'w', 'a': 'd', 'd': 'a'}
+
 # The two buff icons in the bottom-left corner of the walkable deck, above the `B` hint, as
 # left-top-right-bottom fractions of the frame. Each is a filled circle, blue while that activity's buff
 # is up and neutral grey while it is not, so the fill says whether the trip to the station is worth
@@ -300,8 +340,19 @@ FOOD_BUFF_ICON = (0.0750, 0.8981, 0.0932, 0.9278)
 # to spare. Blue is measured against red rather than against a fixed range, which is why the framework's
 # own `calculate_color_percentage` is not used - the unlit grey sits inside any absolute blue range wide
 # enough to hold every shade the lit one takes. The floor keeps a dark but blue-tinted pixel out.
-BUFF_LIT_FRACTION = 0.3
-BUFF_BLUE_MARGIN = 25
+# How blue a pixel has to be to count, and how much of the icon has to be that blue.
+#
+# The margin is the part that matters. The lit icon is a saturated blue that measures about 90 above red,
+# while a merely blue-lit room measures about 22 - and the deck's spawn end is lit blue-grey, with the
+# icon's container translucent over it. At a margin of 25 that room alone carried a grey icon to 0.365,
+# past a 0.3 threshold, and the flow gave up that station for the day without anything having been used.
+# At 50 every unlit icon measured so far reads exactly 0.0, in that room and out of it.
+#
+# The fraction comes down with it, since a stricter margin counts fewer pixels of a genuinely lit icon:
+# real ones measure 0.19 to 0.33. Both bounds are set where the gap is widest rather than snug against
+# either side, because the readings either side of it are 0.0 and 0.19, not neighbours.
+BUFF_LIT_FRACTION = 0.1
+BUFF_BLUE_MARGIN = 50
 BUFF_BLUE_FLOOR = 70
 
 
@@ -320,8 +371,11 @@ class Station(NamedTuple):
     sleep_between: float
     # Name of the method that performs the activity once the station is open.
     action: str
-    # Where this activity's buff icon sits in the bottom-left corner, as fractions of the frame.
+    # Where this activity's buff icon sits in the bottom-left corner, as fractions of the frame. None for an
+    # activity that grants no buff, which has nothing at the entrance to say whether it has been done.
     buff_icon: tuple
+    # Config key switching this station on, or None for one that always runs.
+    toggle: str = None
 
 
 # Visited in this order, each starting from the deck entrance.
@@ -330,6 +384,11 @@ STATIONS = (
     # One key, unlike the CN route, which taps `d` after holding `s`. Walking it by hand showed the tap
     # is not needed to end up in reach of the kitchen.
     Station('Delicious Cuisine', DELICIOUS_CUISINE, ['s'], 'Delicious Cuisine Walk', 1, 'cook_dish', FOOD_BUFF_ICON),
+    # Last, and the only station that always costs its walk. Watering grants no buff, so nothing in the
+    # corner says whether it has been done - the only counter that says so is on the flower's own screen,
+    # behind the walk. Putting it after the two that can be ruled out from the entrance keeps that cost
+    # last rather than in front of trips that may not be needed.
+    Station('Water Flower', MANAGE_FLOWER, ['d', 's', 'd'], 'Water Flower Walk', 0.35, 'water_flower', None, 'Water Flower'),
 )
 
 
@@ -387,11 +446,29 @@ def parse_uses_left(text):
     return max(0, total - used)
 
 
+def blue_fraction(patch):
+    """How much of a buff icon is the solid blue of a lit one.
+
+    The lit icon is a solid blue circle and the unlit one is the same circle in neutral grey, so the reading is how much of the patch is blue rather than how
+    blue any one pixel is. That survives the 3D deck behind it, which the circle is opaque over, and the white glyph drawn on top of it.
+
+    Kept apart from the verdict so the number can be logged. A wrong reading and a marginal one look identical in a log that only records up or not up, and
+    measured icons sit at either roughly 0.62 or exactly 0.0 - so anything between the two is evidence that the region is not on the icon at all.
+
+    Args:
+        patch: The icon region cut out of the frame, in the BGR order OpenCV captures in.
+
+    Returns:
+        The fraction of the patch that is blue, or 0.0 for a patch cropped clean off the edge of the frame.
+    """
+    if patch.size == 0:
+        return 0.0
+    blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
+    return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean())
+
+
 def buff_is_lit(patch):
     """Whether a buff icon is filled in rather than greyed out.
-
-    The lit icon is a solid blue circle and the unlit one is the same circle in neutral grey, so the test is how much of the patch is blue rather than how
-    blue any one pixel is. That survives the 3D deck behind it, which the circle is opaque over, and the white glyph drawn on top of it.
 
     Args:
         patch: The icon region cut out of the frame, in the BGR order OpenCV captures in.
@@ -399,10 +476,7 @@ def buff_is_lit(patch):
     Returns:
         True when enough of the patch is blue to mean the buff is up.
     """
-    if patch.size == 0:
-        return False
-    blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
-    return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean()) >= BUFF_LIT_FRACTION
+    return blue_fraction(patch) >= BUFF_LIT_FRACTION
 
 
 def parse_banner_slots(option):
@@ -495,6 +569,25 @@ def walk_times(option, key_count):
     return (times + [0.0] * key_count)[:key_count]
 
 
+def reverse_walk(keys, times):
+    """Turn a walk out from the deck entrance into the walk back to it.
+
+    The way back is the way out played backwards, so the keys come in the opposite order with each swapped for the one that undoes it, and the durations
+    reverse to match. Reversing a walk twice gives back the original, which is what makes chaining stations inside one visit safe.
+
+    Args:
+        keys: The movement keys the walk out holds, in order.
+        times: One hold duration per key, in the same order.
+
+    Returns:
+        A `(keys, times)` pair describing the walk back.
+
+    Raises:
+        KeyError: A key has no opposite, which would strand the character part way through the deck.
+    """
+    return [OPPOSITE_KEYS[key] for key in reversed(keys)], list(reversed(times))
+
+
 class GlobalDailyTask(BaseGlobalTask):
     """Daily upkeep on the Global client.
 
@@ -513,15 +606,15 @@ class GlobalDailyTask(BaseGlobalTask):
         self.description = 'Starts the in-game Loop, claims free shop packs, and collects Boundary Push rewards.'
         self.support_schedule_task = True
         self.register_flows(FLOWS)
-        self.default_config.update({key: default for key, default, _ in WALK_OPTIONS})
-        self.config_description.update({key: description for key, _, description in WALK_OPTIONS})
+        self.default_config.update({key: default for key, default, _ in WALK_OPTIONS + STATION_TOGGLES})
+        self.config_description.update({key: description for key, _, description in WALK_OPTIONS + STATION_TOGGLES})
         self.default_config[BANNER_SLOTS] = BANNER_SLOTS_DEFAULT
         self.config_description[BANNER_SLOTS] = BANNER_SLOTS_TEXT
         # Group each setting under the flow that reads it. On the Global tasks that is what keeps a `Run:`
         # task down to its own flow's settings. It does not hide anything on the daily itself - that would
         # need the framework's `config_type` sub-configs, which no Global task sets up.
         self.default_config_group.update({
-            'Crew Deck': [key for key, _, _ in WALK_OPTIONS],
+            'Crew Deck': [key for key, _, _ in WALK_OPTIONS + STATION_TOGGLES],
             'Run Event Supply': [BANNER_SLOTS],
         })
         self.default_config.update({key: False for key in FLOWS_OFF_BY_DEFAULT})
@@ -965,49 +1058,68 @@ class GlobalDailyTask(BaseGlobalTask):
     # Crew Deck
 
     def crew_deck(self):
-        """Visit each Crew Deck station in turn, skipping any whose buff is already up.
+        """Visit the Crew Deck stations that are switched on and not already spent, all within one visit.
 
-        A station whose buff is up was already used today, and the walk to it is the expensive part - the prompt that says so only appears once the walk has
-        been paid for. The buff icons say the same thing from the entrance, so a spent station costs a look rather than a trip.
+        Two things make a station cheap to skip. Its setting can switch it off outright, and for the two that grant a buff the icons in the corner say from
+        the entrance whether today's use has been spent - the prompt that says so only appears once the walk has been paid for, so reading the corner saves
+        the trip. The flower has no icon, because watering grants no buff, so that one always costs its walk.
 
-        Skipping a station leaves the character where it spawned, which is where every walk is timed from, so the next station carries on from the same
-        entry rather than backing out and coming in again.
+        What is left is walked in one visit rather than one visit each. Every walk is timed from the entrance, so the character walks back the way it came
+        before the next one starts, which replaces a pair of screen loads with a few seconds of held keys. That only works while the position is known, so
+        anything casting doubt on it - a station that never opened, a deck that is not walkable - falls back on leaving and re-entering.
         """
         self.info_set('current_task', 'crew_deck')
-        entered = False
-        lit = None
+        wanted = []
         for station in STATIONS:
+            if station.toggle is not None and not self.config.get(station.toggle):
+                continue
+            # Read before the deck is opened, so a setting that reads as nothing sensible costs no trip at all.
             try:
-                times = walk_times(self.config.get(station.config_key), len(station.keys))
+                wanted.append((station, walk_times(self.config.get(station.config_key), len(station.keys))))
             except ValueError:
                 self.log_info(f'The {station.config_key} setting is not a list of numbers, skipping {station.label}.', notify=True)
-                continue
-            # Only worth opening the deck for a station that might still be walked to. On the first one
-            # that is unknown, so the deck is opened and the icons read. After that the reading answers
-            # it, which is what keeps a spent second station from costing a trip in and straight back out.
-            if not entered and (lit is None or not lit.get(station.label)):
-                if not self.enter_crew_deck():
-                    self.log_info('Could not get into the Crew Deck, skipping the rest.', notify=True)
-                    self.leave_crew_deck()
-                    return
-                entered = True
-            # Read once and kept for the rest of the run, across the leaving and re-entering each walk
-            # costs. An activity run later only ever lights its own icon, so a stale reading can skip a
-            # trip already made but never one still owed.
-            if lit is None:
-                lit = self.read_activity_buffs()
+        if not wanted:
+            self.log_info('No Crew Deck station is switched on, so there is nothing to walk to.')
+            return
+        if not self.enter_crew_deck():
+            self.log_info('Could not get into the Crew Deck, skipping the rest.', notify=True)
+            self.leave_crew_deck()
+            return
+        # Read once and kept for the rest of the visit. An activity run later only ever lights its own icon,
+        # so a stale reading can skip a trip already made but never one still owed.
+        lit = self.read_activity_buffs()
+        todo = []
+        for station, times in wanted:
             if lit.get(station.label):
                 self.log_info(f'{station.label}: its buff is already up, so not walking to it.', notify=True)
-                continue
+            else:
+                todo.append((station, times))
+        for position, (station, times) in enumerate(todo):
             self.log_info(f'walking to {station.label}, holding {list(zip(station.keys, times))}')
             self.press_keys_sequence(station.keys, times, sleep_between=station.sleep_between)
             self.sleep(1)
-            self.open_station(station)
-            # Back to the entrance between stations, so the next walk starts where its timings were measured.
+            opened = self.open_station(station)
+            # Nothing follows the last one, so walking home would be held keys spent on nothing before
+            # backing out anyway.
+            if position == len(todo) - 1:
+                break
+            # Both have to hold. A station that never opened leaves the character somewhere unknown, and a
+            # deck that is not walkable swallows the movement keys - reversing either compounds the error
+            # rather than undoing it, and every later walk would start from the wrong place.
+            if opened and self.in_walkable_deck():
+                back_keys, back_times = reverse_walk(station.keys, times)
+                self.log_info(f'walking back to the entrance from {station.label}, holding {list(zip(back_keys, back_times))}')
+                self.press_keys_sequence(back_keys, back_times, sleep_between=station.sleep_between)
+                continue
+            # Recovered here rather than remembered for the next pass, since nothing runs in between and
+            # the next walk cannot start until the character is back at the entrance either way.
+            self.log_info(f'{station.label}: not sure where the walk ended, so going back out to start the next one from a known spot.')
             self.leave_crew_deck()
-            entered = False
-        if entered:
-            self.leave_crew_deck()
+            if not self.enter_crew_deck():
+                self.log_info('Could not get back into the Crew Deck, skipping the rest.', notify=True)
+                self.leave_crew_deck()
+                return
+        self.leave_crew_deck()
 
     def in_walkable_deck(self):
         """Whether the walkable Crew Deck is on screen, in one look.
@@ -1064,7 +1176,7 @@ class GlobalDailyTask(BaseGlobalTask):
             self.log_info(f'{station.label}: no prompt after walking, so the walk did not end within reach. Adjust the walk setting.', notify=True)
             self.dump_screen(f'crew_deck_{station.label}_no_prompt')
             return False
-        if self.uses_left(entry) == 0:
+        if self.uses_left(self.prompt_line(entry)) == 0:
             self.log_info(f'{station.label}: already done today, skipping it.', notify=True)
             return True
         # Alt has to be held while clicking, because the Crew Deck hides the cursor until it is pressed.
@@ -1086,26 +1198,36 @@ class GlobalDailyTask(BaseGlobalTask):
             self.log_info('could not read how many dishes are in effect, so going ahead')
         return active
 
-    def uses_left(self, entry):
-        """Read how many times a station can still be used today, off its interaction prompt.
+    def uses_left(self, box, what='prompt'):
+        """Read how many times something can still be used today, off the counter in `box`.
 
-        OCR returns the label and the counter as separate boxes often enough that this reads the whole line the prompt sits on rather than the matched box
-        alone.
+        OCR returns a label and its counter as separate boxes often enough that this joins everything in the region rather than trusting one box.
+
+        Args:
+            box: The region holding the counter.
+            what: What is being read, for the log - a station's interaction prompt, or the flower's Water button.
+
+        Returns:
+            How many uses are left, or None when no counter could be read.
+        """
+        text = ' '.join(found.name for found in self.ocr(box=box, log=True))
+        left = parse_uses_left(text)
+        if left is None:
+            self.log_info(f'no daily counter on the {what} ("{text}"), so going ahead')
+        else:
+            self.log_info(f'{what} "{text}" leaves {left} use(s) today')
+        return left
+
+    def prompt_line(self, entry):
+        """The whole screen line a station's interaction prompt sits on, since its counter is drawn to the right of the label.
 
         Args:
             entry: The boxes that matched the station prompt.
 
         Returns:
-            How many uses are left, or None when no counter could be read.
+            A `Box` spanning from the prompt to the right edge of the frame.
         """
-        line = Box(x=entry[0].x, y=entry[0].y, to_x=self.width, to_y=entry[0].y + entry[0].height)
-        text = ' '.join(box.name for box in self.ocr(box=line, log=True))
-        left = parse_uses_left(text)
-        if left is None:
-            self.log_info(f'no daily counter on the prompt ("{text}"), so going ahead')
-        else:
-            self.log_info(f'prompt "{text}" leaves {left} use(s) today')
-        return left
+        return Box(x=entry[0].x, y=entry[0].y, to_x=self.width, to_y=entry[0].y + entry[0].height)
 
     def read_activity_buffs(self):
         """Read which activity buffs are up, off the icons in the bottom-left corner of the walkable deck.
@@ -1120,12 +1242,21 @@ class GlobalDailyTask(BaseGlobalTask):
         if frame is None:
             self.log_info('buff icons: no frame to read, so walking to every station')
             return {}
-        lit = {}
+        lit, measured = {}, []
         for station in STATIONS:
+            # Left out rather than answered False. A station with no icon has nothing here to read, and
+            # saying its buff is down would be right only by accident.
+            if station.buff_icon is None:
+                continue
             # Through `box_of_screen` rather than by multiplying out the fractions, so the regions hold on
             # a window that is letterboxed as well as one that is merely a different size.
-            lit[station.label] = buff_is_lit(self.box_of_screen(*station.buff_icon).crop_frame(frame))
-        self.log_info('buff icons: ' + ', '.join(f'{label} {"up" if up else "not up"}' for label, up in lit.items()))
+            fraction = blue_fraction(self.box_of_screen(*station.buff_icon).crop_frame(frame))
+            lit[station.label] = fraction >= BUFF_LIT_FRACTION
+            # The number goes in the log beside the verdict. A reading that is wrong and one that is merely
+            # close both read as "up" on their own, and a false "up" silently gives up that activity for the
+            # day - so the log has to carry enough to tell a real buff from a region that has slipped.
+            measured.append(f'{station.label} {"up" if lit[station.label] else "not up"} ({fraction:.3f})')
+        self.log_info('buff icons: ' + ', '.join(measured))
         return lit
 
     def make_drink(self):
@@ -1176,6 +1307,54 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         self.finish_activity('Delicious Cuisine')
         return True
+
+    def close_flower_screen(self):
+        """Back out of the flower screen until the walkable deck is up again.
+
+        Not `finish_activity`, which watering has nothing for - there is no scene and no reward summary, so that would spend its whole start budget waiting
+        for a Skip that never comes. The deck is checked before each press rather than after, because Escape at the walkable deck raises the leave-the-deck
+        confirmation, which is the opposite of what the walk back needs.
+
+        Each press is followed by waiting for the deck rather than a fixed pause. The watering animation swallows Escape while it plays, so the press that
+        lands is rarely the first, and a flat gap either gives up inside the animation or spends its whole budget on a screen that closed immediately.
+
+        Returns:
+            True once the walkable deck is back, False when it never came.
+        """
+        for _ in range(MAX_FLOWER_CLOSES):
+            if self.in_walkable_deck():
+                return True
+            self.back()
+            if self.wait_until(self.in_walkable_deck, time_out=FLOWER_CLOSE_TIME_OUT):
+                return True
+        # Said out loud rather than returned into nothing. The screen staying up is not fatal - backing out
+        # of the deck unwinds it - but a run that quietly believes it is standing on the walkable deck when
+        # it is not will walk its next route from the wrong place.
+        self.log_info('Water Flower: the flower screen did not close, so backing out of the deck will have to unwind it.', notify=True)
+        return False
+
+    def water_flower(self):
+        """Water the flower once, unless today's watering has already been used.
+
+        The flower grows on a daily count rather than granting a buff, so nothing at the deck entrance says whether this has been done - the counter under
+        the Water button is the only thing that does, and it sits behind the walk.
+
+        Returns:
+            True when the flower was watered or was already watered today, False when the Water button was not on screen.
+        """
+        if self.uses_left(self.box_of_screen(*WATER_COUNTER_BAND), 'Water button') == 0:
+            self.log_info('Water Flower: already watered today, so nothing to do.', notify=True)
+            watered = True
+        elif not self.wait_click_ocr(match=WATER, box=self.box_of_screen(*WATER_BUTTON_BAND), time_out=5, after_sleep=2):
+            self.log_info('Water Flower: no Water button on the flower screen.', notify=True)
+            self.dump_screen('crew_deck_Water_Flower_no_button')
+            watered = False
+        else:
+            self.log_info('Water Flower: watered.', notify=True)
+            watered = True
+        # One call rather than one per branch, so the screen cannot be left open by a path that forgets it.
+        self.close_flower_screen()
+        return watered
 
     def finish_activity(self, label):
         """Clear the scenes and summaries that follow an activity, and record anything left unrecognised.

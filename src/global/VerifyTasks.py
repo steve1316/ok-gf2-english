@@ -151,10 +151,9 @@ class RunBoundaryPush(_SingleDailyFlow):
 
 
 class RunCrewDeck(_SingleDailyFlow):
-    """Walks to each Crew Deck station and reports what its dialog says.
+    """Runs the Crew Deck stations - makes the drink, cooks the dish, and waters the flower if that station is switched on.
 
-    Incomplete by design - it reaches Tea Time and Delicious Cuisine but does not run either activity yet, because the dialogs' English wording is unknown.
-    Run it and read the logged lines to find out. This is also how the walk timings get tuned, since a walk that stops short logs that it found no prompt.
+    Each of those is once a day, so this spends them. A walk that stops short of its station says so in the log, which is how the timings get tuned.
     """
 
     flow = 'crew_deck'
