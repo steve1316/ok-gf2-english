@@ -1449,13 +1449,18 @@ class _Trips:
     """
 
     crew_deck = GlobalDailyTask.crew_deck
+    walk_to_station = GlobalDailyTask.walk_to_station
 
-    def __init__(self, lit=None, config=None, can_enter=True, opens=True, walkable=True):
+    def __init__(self, lit=None, config=None, can_enter=True, opens=True, walkable=True, prompts=(), can_travel=True):
         self.lit = lit or {}
         self.config = config or dict(DECK_CONFIG)
         self.can_enter = can_enter
         self.opens = opens
         self.walkable = walkable
+        # Whether each prompt look in turn finds its prompt. Every look past the end of the list finds one.
+        self.prompts = list(prompts)
+        self.can_travel = can_travel
+        self.travels = 0
         self.entries = 0
         self.exits = 0
         self.reads = 0
@@ -1489,7 +1494,17 @@ class _Trips:
     def in_walkable_deck(self):
         return self.walkable
 
-    def open_station(self, station):
+    def wait_ocr(self, match=None, time_out=0, log=False):
+        return ['prompt'] if not self.prompts or self.prompts.pop(0) else None
+
+    def dump_screen(self, label):
+        pass
+
+    def fast_travel_to_lounge(self):
+        self.travels += 1
+        return self.can_travel
+
+    def open_station(self, station, entry):
         self.opened.append(station.label)
         return self.opens
 
@@ -1860,7 +1875,7 @@ class TestCrewDeckChaining(unittest.TestCase):
         self.assertEqual([['s']], task.walked)
 
     def test_a_station_that_never_opened_re_enters_instead_of_walking_back(self):
-        """A walk that did not land leaves the character somewhere unknown, and reversing an unknown position compounds the error rather than undoing it."""
+        """An activity that did not finish leaves the character somewhere unknown, and reversing an unknown position compounds the error rather than undoing it."""
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, opens=False)
         task.crew_deck()
         self.assertEqual([['a', 'w', 'd'], ['s']], task.walked, 'the failed walk is not reversed')
@@ -1879,6 +1894,53 @@ class TestCrewDeckChaining(unittest.TestCase):
         task.crew_deck()
         self.assertEqual([['a', 'w', 'd']], task.walked)
         self.assertEqual(1, task.exits)
+
+
+class TestCrewDeckWalkRetry(unittest.TestCase):
+    """A walk that ends out of reach of its prompt gets one more try, from the Lounge fast travel point the walks are timed from.
+
+    The walk back from Tea Time drifts now and then, which left the kitchen walk starting from the wrong place and the kitchen skipped for the day. Fast
+    travel puts the character back on the entrance spot without leaving the deck.
+    """
+
+    def test_a_missed_prompt_fast_travels_and_walks_the_same_route_again(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, prompts=[False])
+        task.crew_deck()
+        self.assertEqual(1, task.travels)
+        self.assertEqual(['Delicious Cuisine', 'Water Flower'], task.opened, 'the retried station runs, and the next one still follows')
+        self.assertEqual([['s'], ['s'], ['w'], ['d', 's', 'd']], task.walked)
+        self.assertEqual(1, task.entries, 'fast travel replaces leaving and coming in again')
+
+    def test_the_kitchen_is_retried_after_the_walk_back_from_tea_time_drifts(self):
+        task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, prompts=[True, False])
+        task.crew_deck()
+        self.assertEqual(['Tea Time', 'Delicious Cuisine'], task.opened)
+        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s'], ['s']], task.walked)
+
+    def test_a_second_miss_gives_up_on_that_station_only(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, prompts=[False, False])
+        task.crew_deck()
+        self.assertEqual(1, task.travels, 'only one retry per station')
+        self.assertEqual(['Water Flower'], task.opened)
+        self.assertEqual(2, task.entries, 'a station that was never reached still re-enters before the next walk')
+
+    def test_a_fast_travel_that_fails_does_not_walk_again(self):
+        task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, prompts=[False], can_travel=False)
+        task.crew_deck()
+        self.assertEqual([['s']], task.walked, 'walking from wherever the map left the character would miss again')
+        self.assertEqual([], task.opened)
+
+
+class TestFastTravelPatterns(unittest.TestCase):
+    """The Lounge header on the fast travel panel sits above entries that also start with the word Lounge."""
+
+    LOUNGE = importlib.import_module('src.global.GlobalDailyTask').LOUNGE
+
+    def test_lounge_matches_its_header(self):
+        self.assertRegex('Lounge', self.LOUNGE)
+
+    def test_lounge_never_matches_an_entry_inside_it(self):
+        self.assertNotRegex('Lounge Display Wall', self.LOUNGE)
 
 
 class TestWaterFlowerTrips(unittest.TestCase):
