@@ -130,8 +130,9 @@ PURCHASE = re.compile(r'Purchase', re.I)
 QUALITY_SELECTION = re.compile(r'Quality', re.I)
 # The two tabs carrying a free box, in the order they are visited: Treasured holds the Weekly Joy Supply
 # Box, Regular the Daily Supply Box. Matched on the one distinctive word, since OCR splits the three-word
-# tab labels unpredictably and neither word appears in another tab or in the category list.
-FREE_BOX_TABS = (re.compile(r'Treasured', re.I), re.compile(r'Regular', re.I))
+# tab labels unpredictably and neither word appears in another tab or in the category list. Regular is cut to
+# its stem because a live read returned the tab as "Regul", which left the daily box unclaimed without a word.
+FREE_BOX_TABS = (re.compile(r'Treasured', re.I), re.compile(r'Regul', re.I))
 
 # The card grid - everything right of the category sidebar and below the tab strip. Which card is the free
 # one moves from tab to tab, so the whole grid is read rather than a measured corner. Reading only the
@@ -674,6 +675,9 @@ class GlobalDailyTask(BaseGlobalTask):
             for tab in FREE_BOX_TABS:
                 if self.click_ocr_word(tab, box=self.box.top, time_out=5, after_sleep=2):
                     claimed += self.claim_free_boxes()
+                else:
+                    self.log_info(f'Could not find the {tab.pattern} tab, so its free box was not checked.')
+                    self.dump_screen(f'shop_no_{tab.pattern}_tab')
         else:
             # Without the category this is on a page it does not recognise, and the page is still worth
             # reading before giving up - it is where the daily box used to be claimed from.

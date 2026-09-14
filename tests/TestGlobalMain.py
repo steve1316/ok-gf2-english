@@ -173,6 +173,7 @@ class TestPurchaseSafety(unittest.TestCase):
         treasured, regular = daily.FREE_BOX_TABS
         self.assertTrue(treasured.search('Treasured Gift Pack'))
         self.assertTrue(regular.search('Regular Gift Pack'))
+        self.assertTrue(regular.search('Regul'), 'OCR has cut the tab label short to this on a live shop read')
         self.assertTrue(daily.QUALITY_SELECTION.search('Quality'), 'the label wraps, so the first word alone has to match')
         for label in ('Treasured Gift Pack', 'Beginner Package', 'Standard Package', 'Quality Selection'):
             self.assertIsNone(regular.search(label), f'the Regular tab pattern also matches {label!r}')
