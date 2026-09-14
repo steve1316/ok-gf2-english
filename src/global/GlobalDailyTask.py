@@ -130,8 +130,9 @@ PURCHASE = re.compile(r'Purchase', re.I)
 QUALITY_SELECTION = re.compile(r'Quality', re.I)
 # The two tabs carrying a free box, in the order they are visited: Treasured holds the Weekly Joy Supply
 # Box, Regular the Daily Supply Box. Matched on the one distinctive word, since OCR splits the three-word
-# tab labels unpredictably and neither word appears in another tab or in the category list.
-FREE_BOX_TABS = (re.compile(r'Treasured', re.I), re.compile(r'Regular', re.I))
+# tab labels unpredictably and neither word appears in another tab or in the category list. Regular is cut to
+# its stem because a live read returned the tab as "Regul", which left the daily box unclaimed without a word.
+FREE_BOX_TABS = (re.compile(r'Treasured', re.I), re.compile(r'Regul', re.I))
 
 # The card grid - everything right of the category sidebar and below the tab strip. Which card is the free
 # one moves from tab to tab, so the whole grid is read rather than a measured corner. Reading only the
@@ -311,6 +312,17 @@ SCREEN_SETTLE_TIME_OUT = 5
 # each attempt costs up to the framework's scene timeout of 10s, so 25 was a four-minute stall.
 CREW_DECK_LOAD_ATTEMPTS = 3
 STATION_PROMPT_TIME_OUT = 4
+
+# Fast travel, used to put the character back on the entrance spot after a walk misses its prompt. The walk
+# back from one station drifts now and then, and fast travel to the Lounge lands where every walk is timed
+# from without the two screen loads of leaving and coming in again. The button is text, the Lounge header
+# is text, but the double chevron that travels there is not - it sits level with the header at the panel's
+# right edge, measured off a 1920x1080 capture at x=1852.
+FAST_TRAVEL = re.compile(r'Fast Travel', re.I)
+# Anchored, because every entry under the header starts with the same word - "Lounge Display Wall".
+LOUNGE = re.compile(r'^Lounge\W*$', re.I)
+FAST_TRAVEL_PANEL = (0.74, 0.08, 1.0, 1.0)
+LOUNGE_TRAVEL_X = 0.9646
 
 # The movement key hints along the top of the walkable deck. Seeing them means an activity is well and
 # truly over - the deck is only walkable again once its scenes and summaries have closed themselves - so
@@ -674,6 +686,9 @@ class GlobalDailyTask(BaseGlobalTask):
             for tab in FREE_BOX_TABS:
                 if self.click_ocr_word(tab, box=self.box.top, time_out=5, after_sleep=2):
                     claimed += self.claim_free_boxes()
+                else:
+                    self.log_info(f'Could not find the {tab.pattern} tab, so its free box was not checked.')
+                    self.dump_screen(f'shop_no_{tab.pattern}_tab')
         else:
             # Without the category this is on a page it does not recognise, and the page is still worth
             # reading before giving up - it is where the daily box used to be claimed from.
@@ -1098,10 +1113,15 @@ class GlobalDailyTask(BaseGlobalTask):
             else:
                 todo.append((station, times))
         for position, (station, times) in enumerate(todo):
-            self.log_info(f'walking to {station.label}, holding {list(zip(station.keys, times))}')
-            self.press_keys_sequence(station.keys, times, sleep_between=station.sleep_between)
-            self.sleep(1)
-            opened = self.open_station(station)
+            entry = self.walk_to_station(station, times)
+            # One retry from a known spot. A second miss means the walk setting itself is off, which walking it again will not fix.
+            if not entry:
+                self.log_info(f'{station.label}: no prompt after walking, so fast travelling to the Lounge and walking it once more.')
+                entry = self.fast_travel_to_lounge() and self.walk_to_station(station, times)
+            if not entry:
+                self.log_info(f'{station.label}: no prompt after walking, so the walk did not end within reach. Adjust the walk setting.', notify=True)
+                self.dump_screen(f'crew_deck_{station.label}_no_prompt')
+            opened = bool(entry) and self.open_station(station, entry)
             # Nothing follows the last one, so walking home would be held keys spent on nothing before
             # backing out anyway.
             if position == len(todo) - 1:
@@ -1165,20 +1185,56 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         return True
 
-    def open_station(self, station):
+    def walk_to_station(self, station, times):
+        """Walk a station's route from the entrance and wait for its interaction prompt.
+
+        Args:
+            station: The `Station` being walked to.
+            times: One hold duration per movement key, from `walk_times`.
+
+        Returns:
+            The boxes that matched the prompt, or None when the walk did not end within reach.
+        """
+        self.log_info(f'walking to {station.label}, holding {list(zip(station.keys, times))}')
+        self.press_keys_sequence(station.keys, times, sleep_between=station.sleep_between)
+        self.sleep(1)
+        return self.wait_ocr(match=station.prompt, time_out=STATION_PROMPT_TIME_OUT, log=True)
+
+    def fast_travel_to_lounge(self):
+        """Put the character back on the Lounge spawn point through the map, without leaving the deck.
+
+        Returns:
+            True once the walkable deck is back after the loading screen, False when any step did not show up. A failure can leave the map open, which
+            backing out of the deck unwinds.
+        """
+        self.send_key('m')
+        if not self.wait_click_ocr(match=FAST_TRAVEL, box=self.box.bottom_right, time_out=SCREEN_SETTLE_TIME_OUT):
+            self.log_info('Fast travel: no Fast Travel button on the map.')
+            self.dump_screen('crew_deck_no_fast_travel')
+            return False
+        # A page wait rather than a plain one, since the chevron is clicked by position and the panel slides in.
+        lounge = self.wait_page(match=LOUNGE, box=self.box_of_screen(*FAST_TRAVEL_PANEL), time_out=SCREEN_SETTLE_TIME_OUT, log=True)
+        if not lounge:
+            self.log_info('Fast travel: no Lounge on the fast travel panel.')
+            self.dump_screen('crew_deck_no_lounge')
+            return False
+        header = min(lounge, key=lambda box: box.y)
+        self.click(LOUNGE_TRAVEL_X, (header.y + header.height / 2) / self.height)
+        if not self.is_free_layer(time_out=CREW_DECK_LOAD_ATTEMPTS):
+            self.log_info('Fast travel: the Lounge did not finish loading into its walkable view.')
+            return False
+        return True
+
+    def open_station(self, station, entry):
         """Interact with one station and run its activity, unless it is already spent for the day.
 
         Args:
             station: The `Station` being visited.
+            entry: The boxes that matched its interaction prompt.
 
         Returns:
-            True when the station was handled, whether the activity ran or was correctly skipped. False when it was never reached or could not start.
+            True when the station was handled, whether the activity ran or was correctly skipped. False when the activity could not start.
         """
-        entry = self.wait_ocr(match=station.prompt, time_out=STATION_PROMPT_TIME_OUT, log=True)
-        if not entry:
-            self.log_info(f'{station.label}: no prompt after walking, so the walk did not end within reach. Adjust the walk setting.', notify=True)
-            self.dump_screen(f'crew_deck_{station.label}_no_prompt')
-            return False
         if self.uses_left(self.prompt_line(entry)) == 0:
             self.log_info(f'{station.label}: already done today, skipping it.', notify=True)
             return True
