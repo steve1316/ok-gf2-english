@@ -254,13 +254,12 @@ class BaseGlobalTask(BaseGfTask):
     def despite_cursor_error(self, action, label, /, *args, **kwargs):
         """Run an interaction, surviving Windows refusing to move the cursor.
 
-        The Genshin interaction warps the real cursor onto the game before each action and puts it back afterwards. `SetCursorPos` fails when something else
-        holds the input queue, which is exactly what happens when the mouse is in use while the bot runs, and the whole task dies on an error that has
-        nothing to do with the game.
+        The Genshin interaction can move the real cursor around each action. `SetCursorPos` fails when something else holds the input queue, which is
+        exactly what happens when the mouse is in use while the bot runs, and the whole task dies on an error that has nothing to do with the game.
+        Upstream's input safety patch now swallows the failing restore itself, so this is the fallback for whatever still gets through.
 
-        The action itself is not repeated. The failing restore runs after it, and the framework already swallows exceptions from the action, so by the time
-        this is reached the key, click or swipe has landed. Doing it again would press twice - a walk that goes too far, or a stage clicked when it was not
-        meant to be - while letting it through at worst loses one, which shows up as a step that did not take and says so.
+        The action itself is not repeated, since it may already have landed. Doing it again would press twice - a walk that goes too far, or a stage
+        clicked when it was not meant to be - while letting it through at worst loses one, which shows up as a step that did not take and says so.
 
         Args:
             action: The bound superclass method to call.
@@ -282,9 +281,9 @@ class BaseGlobalTask(BaseGfTask):
     def recover_cursor(self, label):
         """Undo what a refused cursor move left behind.
 
-        Two things are owed. First, input may still be blocked: the framework blocks it for the length of a click and unblocks it only after putting the
-        cursor back, so when putting it back throws, the unblock never runs and the keyboard and mouse stay frozen for as long as the app lives. That is
-        released first and unconditionally, since unblocking input that is not blocked does nothing.
+        Two things are owed. First, input may still be blocked: an unpatched framework blocks it for the length of a click and unblocks it only after
+        putting the cursor back, so when that throws, the keyboard and mouse stay frozen until the app exits. Upstream's input safety patch no
+        longer blocks at all, but it is released first and unconditionally anyway, since unblocking input that is not blocked does nothing.
 
         Second, the cursor is wherever the bot left it rather than where its owner left it. That is retried rather than given up on, because the reason it
         failed - the mouse being in use - passes on its own. It is not retried forever, and failing to restore it is not raised: the action it belonged to
