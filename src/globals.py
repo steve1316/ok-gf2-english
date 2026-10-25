@@ -1,8 +1,7 @@
 import os
 
-from PySide6.QtCore import QObject
-
 from ok import Logger
+from PySide6.QtCore import QObject
 
 logger = Logger.get_logger(__name__)
 
@@ -192,7 +191,6 @@ def translate_notifications():
 
 
 class Globals(QObject):
-
     def __init__(self, exit_event):
         super().__init__()
         widen_settings_text_column()

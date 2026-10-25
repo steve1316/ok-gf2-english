@@ -19,6 +19,9 @@ REGION_DEFAULT = REGION_GLOBAL
 # Module prefix of the CN task package. Anything registered from there belongs to the CN client.
 CN_TASK_PREFIX = "src.tasks."
 
+# Module prefix of upstream's own settings tabs. Multi-account setup and the important notices both describe the CN task set, in Chinese.
+CN_TAB_PREFIX = "src.gui."
+
 # Tasks that drive the Global client. They live in src/global/ and match English on-screen text
 # directly instead of going through the reverse ocr.po translation.
 GLOBAL_TASKS = [
@@ -118,7 +121,7 @@ def _hide_tasks(task_entries):
 
 
 def apply_region(config):
-    """Register the Region setting and hide whichever region's tasks are not selected.
+    """Register the Region setting and hide whichever region's tasks are not selected, along with upstream's CN-only tabs and trigger tasks on Global.
 
     Global tasks are appended to whatever `src/config.py` already registered rather than replacing it. That keeps upstream as the single source of truth for
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
@@ -131,4 +134,10 @@ def apply_region(config):
     registered = config["onetime_tasks"]
     cn_tasks = [entry for entry in registered if entry[0].startswith(CN_TASK_PREFIX)]
     config["onetime_tasks"] = registered + GLOBAL_TASKS
-    _hide_tasks(cn_tasks if current_region(config.get("config_folder", "configs")) == REGION_GLOBAL else GLOBAL_TASKS)
+    if current_region(config.get("config_folder", "configs")) != REGION_GLOBAL:
+        _hide_tasks(GLOBAL_TASKS)
+        return
+    _hide_tasks(cn_tasks)
+    # Dropped outright rather than hidden. Neither list is indexed by "-t N", and a registered trigger task can still run in the background.
+    config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
+    config["trigger_tasks"] = [entry for entry in config.get("trigger_tasks", []) if not entry[0].startswith(CN_TASK_PREFIX)]

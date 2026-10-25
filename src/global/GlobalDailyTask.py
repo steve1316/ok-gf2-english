@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 from ok import Box, find_boxes_by_name
 
-from src.tasks.BaseGfTask import map_re, parse_time_option
+from src.core.BaseGfTask import map_re, parse_time_option
 
 from .BaseGlobalTask import CANCEL, CLAIM_ALL, CLICK_ANYWHERE, CONFIRM, COUNTER, CREW_DECK, PAGE_DRAW_PAUSE, PROCEED, SHOP, SKIP, BaseGlobalTask
 
@@ -275,6 +275,15 @@ INGREDIENT_SPOTS = ((0.236, 0.283), (0.308, 0.283))
 WATER_BUTTON_BAND = (0.74, 0.44, 0.87, 0.57)
 WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
 
+# How many times to read the counter after pressing Water, and how long to wait between reads. Not measured: the press already waits 2s, and one
+# more look covers a counter that ticks over with an animation slower than that. It only reads, and never presses Water a second time.
+WATER_CONFIRM_READS = 2
+WATER_CONFIRM_PAUSE = 2
+
+# How many times to press Make before giving up on its confirmation. Upstream traced an ignored Make to Alt left held after the Alt-click into
+# Tea Time, which GfInteraction now releases. The second press is a fallback, and a screen that ignores two is not going to answer a third.
+MAKE_PRESSES = 2
+
 # How many times to press Escape getting off the flower screen, and how long to give the deck to come back
 # after each press. Watering plays no scene, but it does play an animation that swallows Escape for several
 # seconds - a live run spent three presses inside one and closed nothing - so the presses are spaced by
@@ -307,10 +316,9 @@ STATION_TOGGLES = (
 # generous one spends its whole budget on a question the first redraw already answered.
 SCREEN_SETTLE_TIME_OUT = 5
 
-# How many times to look for the loaded deck, and how long to wait for a station prompt once the walk
-# has finished. The first is a count, not seconds: `is_free_layer` divides it by its own interval and
-# each attempt costs up to the framework's scene timeout of 10s, so 25 was a four-minute stall.
-CREW_DECK_LOAD_ATTEMPTS = 3
+# How long to wait for the loaded deck, and for a station prompt once the walk has finished. `is_free_layer` used to count attempts of up to
+# 10s each, and 3 of them gave the deck ~30s to load. It takes seconds now, so the same budget is spelled out rather than shrunk to 3s.
+CREW_DECK_LOAD_TIME_OUT = 30
 STATION_PROMPT_TIME_OUT = 4
 
 # Fast travel, used to put the character back on the entrance spot after a walk misses its prompt. The walk
@@ -1180,7 +1188,7 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         # Confirmed by the movement key hints along the top, which read the same in every language. Waiting
         # on those rather than on a title also means the deck is not merely open but finished loading.
-        if not self.is_free_layer(time_out=CREW_DECK_LOAD_ATTEMPTS):
+        if not self.is_free_layer(time_out=CREW_DECK_LOAD_TIME_OUT):
             self.log_info('The Crew Deck did not finish loading into its walkable view.')
             return False
         return True
@@ -1220,7 +1228,7 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         header = min(lounge, key=lambda box: box.y)
         self.click(LOUNGE_TRAVEL_X, (header.y + header.height / 2) / self.height)
-        if not self.is_free_layer(time_out=CREW_DECK_LOAD_ATTEMPTS):
+        if not self.is_free_layer(time_out=CREW_DECK_LOAD_TIME_OUT):
             self.log_info('Fast travel: the Lounge did not finish loading into its walkable view.')
             return False
         return True
@@ -1326,18 +1334,22 @@ class GlobalDailyTask(BaseGlobalTask):
         Returns:
             True when the drink was confirmed, False when either step was missing.
         """
-        if not self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
+        pressed = 0
+        # Pressed again only while Make is still there. Once it has gone the screen has moved on, and its old spot is something else.
+        while pressed < MAKE_PRESSES and self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
+            pressed += 1
+            # Make raises a Caution dialog - "Do you wish to make X? N time(s) remaining today" - with Cancel
+            # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
+            # two can never be hit. Nothing is made until this lands.
+            if self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
+                self.finish_activity('Tea Time')
+                return True
+        if not pressed:
             self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
             return False
-        # Make raises a Caution dialog - "Do you wish to make X? N time(s) remaining today" - with Cancel
-        # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
-        # two can never be hit. Nothing is made until this lands.
-        if not self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
-            self.log_info('Tea Time: the Make confirmation never appeared, so no drink was made.', notify=True)
-            self.dump_screen('crew_deck_Tea_Time_no_confirm')
-            return False
-        self.finish_activity('Tea Time')
-        return True
+        self.log_info('Tea Time: the Make confirmation never appeared, so no drink was made.', notify=True)
+        self.dump_screen('crew_deck_Tea_Time_no_confirm')
+        return False
 
     def cook_dish(self):
         """Cook a dish from the first two ingredients, then invite whichever doll is preselected.
@@ -1399,9 +1411,10 @@ class GlobalDailyTask(BaseGlobalTask):
         the Water button is the only thing that does, and it sits behind the walk.
 
         Returns:
-            True when the flower was watered or was already watered today, False when the Water button was not on screen.
+            True when the flower was watered or was already watered today, False when the Water button was not on screen or the press did not take.
         """
-        if self.uses_left(self.box_of_screen(*WATER_COUNTER_BAND), 'Water button') == 0:
+        counter = self.box_of_screen(*WATER_COUNTER_BAND)
+        if self.uses_left(counter, 'Water button') == 0:
             self.log_info('Water Flower: already watered today, so nothing to do.', notify=True)
             watered = True
         elif not self.wait_click_ocr(match=WATER, box=self.box_of_screen(*WATER_BUTTON_BAND), time_out=5, after_sleep=2):
@@ -1409,11 +1422,34 @@ class GlobalDailyTask(BaseGlobalTask):
             self.dump_screen('crew_deck_Water_Flower_no_button')
             watered = False
         else:
-            self.log_info('Water Flower: watered.', notify=True)
-            watered = True
+            watered = self.confirm_watered(counter)
         # One call rather than one per branch, so the screen cannot be left open by a path that forgets it.
         self.close_flower_screen()
         return watered
+
+    def confirm_watered(self, counter):
+        """Read the counter again after pressing Water, since the press is the one step that can quietly not take.
+
+        Args:
+            counter: The band under the Water button that holds its uses-left counter.
+
+        Returns:
+            True when the counter shows today's watering used, or could not be read at all. False when it still shows it unused.
+        """
+        for attempt in range(WATER_CONFIRM_READS):
+            if attempt:
+                self.sleep(WATER_CONFIRM_PAUSE)
+            left = self.uses_left(counter, 'Water button')
+            if left == 0:
+                self.log_info('Water Flower: watered.', notify=True)
+                return True
+            # Taken on trust. The press landed on a Water button that was there, and a missed counter is not a dry flower.
+            if left is None:
+                self.log_info('Water Flower: pressed Water, but the counter could not be read to confirm it.', notify=True)
+                return True
+        self.log_info("Water Flower: pressed Water, but the counter still shows today's watering unused.", notify=True)
+        self.dump_screen('crew_deck_Water_Flower_did_not_take')
+        return False
 
     def finish_activity(self, label):
         """Clear the scenes and summaries that follow an activity, and record anything left unrecognised.

@@ -1223,6 +1223,34 @@ class TestRegionHiding(unittest.TestCase):
         self.assertFalse(self.region().already_hidden(Fresh))
 
 
+class TestRegionExtras(unittest.TestCase):
+    """Upstream's own tabs and trigger tasks are for the CN client, so a Global install should not show them."""
+
+    def config(self):
+        return {
+            'onetime_tasks': [['src.tasks.DailyTask', 'DailyTask']],
+            'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
+            'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
+        }
+
+    def applied(self, region_name):
+        region = importlib.import_module('src.region')
+        config = self.config()
+        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_hide_tasks'):
+            region.apply_region(config)
+        return config
+
+    def test_global_drops_the_cn_tabs_and_trigger_tasks(self):
+        config = self.applied('Global')
+        self.assertEqual([], config['custom_tabs'])
+        self.assertEqual([], config['trigger_tasks'])
+
+    def test_cn_keeps_them(self):
+        config, expected = self.applied('CN'), self.config()
+        self.assertEqual(expected['custom_tabs'], config['custom_tabs'])
+        self.assertEqual(expected['trigger_tasks'], config['trigger_tasks'])
+
+
 class TestSwipeRecovery(unittest.TestCase):
     """A refused cursor move during a swipe leaves the mouse button held.
 
@@ -1242,7 +1270,7 @@ class TestSwipeRecovery(unittest.TestCase):
         release.assert_called_once()
 
     def test_an_interaction_without_a_release_is_tolerated(self):
-        """`PostMessage` is selectable on the Start tab and does not offer the same surface."""
+        """An interaction picked on the Start tab need not offer the same surface."""
         self.base().BaseGlobalTask.release_mouse(self.task(types.SimpleNamespace()))
 
     def test_a_refused_release_is_logged_rather_than_raised(self):
@@ -1722,9 +1750,12 @@ class _Flower:
     water_flower = GlobalDailyTask.water_flower
     uses_left = GlobalDailyTask.uses_left
     close_flower_screen = GlobalDailyTask.close_flower_screen
+    confirm_watered = GlobalDailyTask.confirm_watered
 
-    def __init__(self, counter='0/1', has_button=True, walkable_after=0):
+    def __init__(self, counter='0/1', has_button=True, walkable_after=0, after='1/1'):
         self.counter = counter
+        # What the counter reads once Water has been pressed.
+        self.after = after
         self.has_button = has_button
         self.walkable_after = walkable_after
         self.clicked = []
@@ -1760,6 +1791,7 @@ class _Flower:
         if not self.has_button:
             return None
         self.clicked.append('Water')
+        self.counter = self.after
         return Box(1500, 540, 100, 40, name='Water')
 
 
@@ -1782,9 +1814,21 @@ class TestWaterFlower(unittest.TestCase):
 
     def test_an_unreadable_counter_waters_rather_than_skipping(self):
         """Unknown is not spent. Skipping on a counter OCR could not read would quietly stop watering altogether."""
-        task = _Flower(counter='')
+        task = _Flower(counter='', after='')
         self.assertTrue(task.water_flower())
         self.assertEqual(['Water'], task.clicked)
+
+    def test_a_press_that_did_not_take_is_reported_rather_than_assumed_done(self):
+        """It used to log "watered" straight after the click. A press the game swallowed then read as a watered flower and nothing said otherwise."""
+        task = _Flower(counter='0/1', after='0/1')
+        self.assertFalse(task.water_flower())
+        self.assertTrue(task.dumped, 'the screen that did not take the press should be kept')
+
+    def test_a_counter_unreadable_after_the_press_is_taken_on_trust(self):
+        """The press landed on a Water button that was there. Failing it because OCR missed the counter would call a watered flower dry."""
+        task = _Flower(counter='0/1', after='')
+        self.assertTrue(task.water_flower())
+        self.assertEqual([], task.dumped)
 
     def test_a_missing_button_is_reported_rather_than_assumed_done(self):
         """A screen with no Water button is not a watered flower, and the run should say what was on screen instead."""
@@ -1819,6 +1863,132 @@ class TestWaterFlower(unittest.TestCase):
         task = _Flower(walkable_after=0)
         task.water_flower()
         self.assertEqual(0, task.backs)
+
+
+class _Drink:
+    """A stand-in for the daily task on the Tea Time drink screen, scripting whether each press of Make raises its confirmation."""
+
+    make_drink = GlobalDailyTask.make_drink
+
+    def __init__(self, confirms=(True,), make_shown=None):
+        # One entry per press of Make, saying whether the confirmation came up after it.
+        self.confirms = list(confirms)
+        # How many looks find Make on screen. None keeps it there for good.
+        self.make_shown = make_shown
+        self.dialog = False
+        self.pressed = []
+        self.dumped = []
+        self.finished = False
+        self.box = types.SimpleNamespace(bottom_right=None, bottom=None)
+
+    def log_info(self, message, notify=False):
+        pass
+
+    def dump_screen(self, name):
+        self.dumped.append(name)
+
+    def finish_activity(self, label):
+        self.finished = True
+
+    def wait_click_ocr(self, match=None, **kwargs):
+        if match is importlib.import_module('src.global.GlobalDailyTask').MAKE:
+            if self.make_shown is not None and self.pressed.count('Make') >= self.make_shown:
+                return None
+            self.pressed.append('Make')
+            self.dialog = self.confirms.pop(0) if self.confirms else False
+            return [Box(1700, 950, 100, 40, name='Make')]
+        if not self.dialog:
+            return None
+        self.pressed.append('Confirm')
+        return [Box(1100, 750, 100, 40, name='Confirm')]
+
+
+class TestMakeDrink(unittest.TestCase):
+    """Make raises a Caution dialog, and nothing is made until its Confirm is pressed.
+
+    Upstream saw the press on Make not take on the CN client, with Alt left held after the Alt-click in. Giving up there lost the day's drink, and the
+    buff with it, for want of one more press.
+    """
+
+    def test_a_drink_confirmed_on_the_first_press(self):
+        task = _Drink(confirms=(True,))
+        self.assertTrue(task.make_drink())
+        self.assertEqual(['Make', 'Confirm'], task.pressed)
+        self.assertTrue(task.finished)
+
+    def test_a_press_that_did_not_take_is_pressed_once_more(self):
+        task = _Drink(confirms=(False, True))
+        self.assertTrue(task.make_drink())
+        self.assertEqual(['Make', 'Make', 'Confirm'], task.pressed)
+
+    def test_it_stops_after_the_second_press(self):
+        """A screen that ignores two presses will ignore a third, and the frame is what says why."""
+        task = _Drink(confirms=(False, False, True))
+        self.assertFalse(task.make_drink())
+        self.assertEqual(['Make', 'Make'], task.pressed)
+        self.assertTrue(task.dumped)
+
+    def test_it_does_not_press_again_once_make_has_gone(self):
+        """No Make on screen means the screen moved on to something else, and pressing where it was would land on whatever that is."""
+        task = _Drink(confirms=(False,), make_shown=1)
+        self.assertFalse(task.make_drink())
+        self.assertEqual(['Make'], task.pressed)
+        self.assertTrue(task.dumped)
+
+    def test_no_make_button_presses_nothing(self):
+        task = _Drink(make_shown=0)
+        self.assertFalse(task.make_drink())
+        self.assertEqual([], task.pressed)
+
+
+class _Dialogs:
+    """A stand-in for a task clicking through story dialogue, fed one scripted OCR read per pass and counting taps on the skip corner."""
+
+    skip_dialogs = BaseGlobalTask.skip_dialogs
+    _is_loading_frame = BaseGlobalTask._is_loading_frame
+
+    def __init__(self, frames):
+        # One OCR read per pass. The end screen follows the last of them.
+        self.frames = list(frames)
+        self.taps = 0
+
+    def info_set(self, key, value):
+        pass
+
+    def ocr(self):
+        return self.frames.pop(0) if self.frames else [Box(100, 100, 80, 30, name='Home')]
+
+    def find_boxes(self, boxes, match=None, boundary=None):
+        return find_boxes_by_name(boxes, match)
+
+    def click_relative(self, x, y):
+        self.taps += 1
+
+    def sleep(self, seconds):
+        pass
+
+    def next_frame(self):
+        pass
+
+
+class TestSkipDialogsLoading(unittest.TestCase):
+    """The skip corner is tapped blind whenever nothing else on screen is recognised.
+
+    Upstream found that tapping it on a loading frame lands on whatever draws there next, which hung a battle settlement on the CN client.
+    """
+
+    END = re.compile(r'^Home$')
+
+    def test_loading_frames_are_waited_out_rather_than_tapped(self):
+        frames = [[], [Box(900, 1000, 60, 30, name='45%')], [Box(900, 1000, 120, 30, name='Loading...')]]
+        task = _Dialogs(frames)
+        self.assertTrue(task.skip_dialogs([self.END], time_out=5))
+        self.assertEqual(0, task.taps)
+
+    def test_a_dialogue_frame_is_still_tapped(self):
+        task = _Dialogs([[Box(400, 900, 600, 40, name='We should get moving before they find us.')]])
+        self.assertTrue(task.skip_dialogs([self.END], time_out=5))
+        self.assertEqual(1, task.taps)
 
 
 class TestWaterScreenRegions(unittest.TestCase):
