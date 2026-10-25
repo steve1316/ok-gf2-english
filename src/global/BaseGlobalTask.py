@@ -29,6 +29,8 @@ COMMISSIONS = re.compile(r'Commissions', re.I)
 # Expansion Drills, Boss Fight, Peak Value Assessment and Boundary Push.
 REGULAR_COMMISSIONS = re.compile(r'Regular Commissions', re.I)
 SKIP = re.compile(r'Skip', re.I)
+# A loading screen, by its label or its percentage. Tapping blind on one lands on whatever draws next, which upstream saw hang a battle settlement.
+LOADING = re.compile(r'Loading|\d{1,3}\s*%', re.I)
 # The button that opens a mode from its card in Regular Commissions. Every card carries one, so it is only
 # ever safe to click through `click_card_button`, which picks the one belonging to a named card.
 PROCEED = re.compile(r'Proceed', re.I)
@@ -955,7 +957,8 @@ class BaseGlobalTask(BaseGfTask):
                 self.back()
                 self.sleep(1)
             else:
-                if has_dialog:
+                # An empty read is a loading or fading frame too, so it is waited out like one.
+                if has_dialog and boxes and not self.find_boxes(boxes, match=LOADING):
                     self.click_relative(0.95, 0.04)
                 self.sleep(2)
             self.next_frame()

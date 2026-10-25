@@ -1941,6 +1941,55 @@ class TestMakeDrink(unittest.TestCase):
         self.assertEqual([], task.pressed)
 
 
+class _Dialogs:
+    """A stand-in for a task clicking through story dialogue, fed one scripted OCR read per pass and counting taps on the skip corner."""
+
+    skip_dialogs = BaseGlobalTask.skip_dialogs
+
+    def __init__(self, frames):
+        # One OCR read per pass. The end screen follows the last of them.
+        self.frames = list(frames)
+        self.taps = 0
+
+    def info_set(self, key, value):
+        pass
+
+    def ocr(self):
+        return self.frames.pop(0) if self.frames else [Box(100, 100, 80, 30, name='Home')]
+
+    def find_boxes(self, boxes, match=None, boundary=None):
+        return find_boxes_by_name(boxes, match)
+
+    def click_relative(self, x, y):
+        self.taps += 1
+
+    def sleep(self, seconds):
+        pass
+
+    def next_frame(self):
+        pass
+
+
+class TestSkipDialogsLoading(unittest.TestCase):
+    """The skip corner is tapped blind whenever nothing else on screen is recognised.
+
+    Upstream found that tapping it on a loading frame lands on whatever draws there next, which hung a battle settlement on the CN client.
+    """
+
+    END = re.compile(r'^Home$')
+
+    def test_loading_frames_are_waited_out_rather_than_tapped(self):
+        frames = [[], [Box(900, 1000, 60, 30, name='45%')], [Box(900, 1000, 120, 30, name='Loading...')]]
+        task = _Dialogs(frames)
+        self.assertTrue(task.skip_dialogs([self.END], time_out=5))
+        self.assertEqual(0, task.taps)
+
+    def test_a_dialogue_frame_is_still_tapped(self):
+        task = _Dialogs([[Box(400, 900, 600, 40, name='We should get moving before they find us.')]])
+        self.assertTrue(task.skip_dialogs([self.END], time_out=5))
+        self.assertEqual(1, task.taps)
+
+
 class TestWaterScreenRegions(unittest.TestCase):
     """The flower screen draws Water and Fertilize side by side, each a round button with a counter underneath reading exactly the same shape.
 
