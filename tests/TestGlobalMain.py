@@ -1750,9 +1750,12 @@ class _Flower:
     water_flower = GlobalDailyTask.water_flower
     uses_left = GlobalDailyTask.uses_left
     close_flower_screen = GlobalDailyTask.close_flower_screen
+    confirm_watered = GlobalDailyTask.confirm_watered
 
-    def __init__(self, counter='0/1', has_button=True, walkable_after=0):
+    def __init__(self, counter='0/1', has_button=True, walkable_after=0, after='1/1'):
         self.counter = counter
+        # What the counter reads once Water has been pressed.
+        self.after = after
         self.has_button = has_button
         self.walkable_after = walkable_after
         self.clicked = []
@@ -1788,6 +1791,7 @@ class _Flower:
         if not self.has_button:
             return None
         self.clicked.append('Water')
+        self.counter = self.after
         return Box(1500, 540, 100, 40, name='Water')
 
 
@@ -1810,9 +1814,21 @@ class TestWaterFlower(unittest.TestCase):
 
     def test_an_unreadable_counter_waters_rather_than_skipping(self):
         """Unknown is not spent. Skipping on a counter OCR could not read would quietly stop watering altogether."""
-        task = _Flower(counter='')
+        task = _Flower(counter='', after='')
         self.assertTrue(task.water_flower())
         self.assertEqual(['Water'], task.clicked)
+
+    def test_a_press_that_did_not_take_is_reported_rather_than_assumed_done(self):
+        """It used to log "watered" straight after the click. A press the game swallowed then read as a watered flower and nothing said otherwise."""
+        task = _Flower(counter='0/1', after='0/1')
+        self.assertFalse(task.water_flower())
+        self.assertTrue(task.dumped, 'the screen that did not take the press should be kept')
+
+    def test_a_counter_unreadable_after_the_press_is_taken_on_trust(self):
+        """The press landed on a Water button that was there. Failing it because OCR missed the counter would call a watered flower dry."""
+        task = _Flower(counter='0/1', after='')
+        self.assertTrue(task.water_flower())
+        self.assertEqual([], task.dumped)
 
     def test_a_missing_button_is_reported_rather_than_assumed_done(self):
         """A screen with no Water button is not a watered flower, and the run should say what was on screen instead."""

@@ -275,6 +275,11 @@ INGREDIENT_SPOTS = ((0.236, 0.283), (0.308, 0.283))
 WATER_BUTTON_BAND = (0.74, 0.44, 0.87, 0.57)
 WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
 
+# How many times to read the counter after pressing Water, and how long to wait between reads. Not measured: the press already waits 2s, and one
+# more look covers a counter that ticks over with an animation slower than that. It only reads, and never presses Water a second time.
+WATER_CONFIRM_READS = 2
+WATER_CONFIRM_PAUSE = 2
+
 # How many times to press Escape getting off the flower screen, and how long to give the deck to come back
 # after each press. Watering plays no scene, but it does play an animation that swallows Escape for several
 # seconds - a live run spent three presses inside one and closed nothing - so the presses are spaced by
@@ -1398,7 +1403,7 @@ class GlobalDailyTask(BaseGlobalTask):
         the Water button is the only thing that does, and it sits behind the walk.
 
         Returns:
-            True when the flower was watered or was already watered today, False when the Water button was not on screen.
+            True when the flower was watered or was already watered today, False when the Water button was not on screen or the press did not take.
         """
         if self.uses_left(self.box_of_screen(*WATER_COUNTER_BAND), 'Water button') == 0:
             self.log_info('Water Flower: already watered today, so nothing to do.', notify=True)
@@ -1408,11 +1413,32 @@ class GlobalDailyTask(BaseGlobalTask):
             self.dump_screen('crew_deck_Water_Flower_no_button')
             watered = False
         else:
-            self.log_info('Water Flower: watered.', notify=True)
-            watered = True
+            watered = self.confirm_watered()
         # One call rather than one per branch, so the screen cannot be left open by a path that forgets it.
         self.close_flower_screen()
         return watered
+
+    def confirm_watered(self):
+        """Read the counter again after pressing Water, since the press is the one step that can quietly not take.
+
+        Returns:
+            True when the counter shows today's watering used, or could not be read at all. False when it still shows it unused.
+        """
+        counter = self.box_of_screen(*WATER_COUNTER_BAND)
+        for attempt in range(WATER_CONFIRM_READS):
+            if attempt:
+                self.sleep(WATER_CONFIRM_PAUSE)
+            left = self.uses_left(counter, 'Water button')
+            if left == 0:
+                self.log_info('Water Flower: watered.', notify=True)
+                return True
+            # Taken on trust. The press landed on a Water button that was there, and a missed counter is not a dry flower.
+            if left is None:
+                self.log_info('Water Flower: pressed Water, but the counter could not be read to confirm it.', notify=True)
+                return True
+        self.log_info("Water Flower: pressed Water, but the counter still shows today's watering unused.", notify=True)
+        self.dump_screen('crew_deck_Water_Flower_did_not_take')
+        return False
 
     def finish_activity(self, label):
         """Clear the scenes and summaries that follow an activity, and record anything left unrecognised.
