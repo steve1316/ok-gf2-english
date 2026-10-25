@@ -173,7 +173,9 @@ PURCHASE_CONFIRM = re.compile(r'Purchase\(?s\)?', re.I)
 # Any sign of a real-money price. The free box and the paid one are two tabs of a single popup and carry
 # an identical Purchase button, and claiming the free box switches the popup to the paid tab, so the item
 # that is open is not necessarily the one that was clicked. Nothing is ever bought without checking this first.
-PRICE = re.compile(r'[$€£¥]|\d+\.\d{2}')
+# A bare decimal has to be a whole number on its own. A blurred line at the foot of the free dialog read as
+# "001002820.5589" on 2026-10-19, and matching "820.55" inside it refused that day's weekly box.
+PRICE = re.compile(r'[$€£¥]|(?<![\d.])\d{1,4}\.\d{2}(?!\d)')
 
 # The purchase dialog's own area. Scoped tightly on purpose: the shop page stays visible around the
 # dialog, including the featured item's price and its own Purchase button, and reading those as if they
