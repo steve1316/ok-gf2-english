@@ -1865,6 +1865,82 @@ class TestWaterFlower(unittest.TestCase):
         self.assertEqual(0, task.backs)
 
 
+class _Drink:
+    """A stand-in for the daily task on the Tea Time drink screen, scripting whether each press of Make raises its confirmation."""
+
+    make_drink = GlobalDailyTask.make_drink
+
+    def __init__(self, confirms=(True,), has_make=True, make_stays=True):
+        # One entry per press of Make, saying whether the confirmation came up after it.
+        self.confirms = list(confirms)
+        self.has_make = has_make
+        # Whether Make is still on screen after a press that raised nothing.
+        self.make_stays = make_stays
+        self.dialog = False
+        self.pressed = []
+        self.dumped = []
+        self.finished = False
+        self.box = types.SimpleNamespace(bottom_right=None, bottom=None)
+
+    def log_info(self, message, notify=False):
+        pass
+
+    def dump_screen(self, name):
+        self.dumped.append(name)
+
+    def finish_activity(self, label):
+        self.finished = True
+
+    def wait_click_ocr(self, match=None, **kwargs):
+        if match.pattern == '^Make$':
+            if not self.has_make or (self.pressed and not self.make_stays):
+                return None
+            self.pressed.append('Make')
+            self.dialog = self.confirms.pop(0) if self.confirms else False
+            return [Box(1700, 950, 100, 40, name='Make')]
+        if not self.dialog:
+            return None
+        self.pressed.append('Confirm')
+        return [Box(1100, 750, 100, 40, name='Confirm')]
+
+
+class TestMakeDrink(unittest.TestCase):
+    """Make raises a Caution dialog, and nothing is made until its Confirm is pressed.
+
+    Upstream saw the press on Make not take on the CN client. Giving up there lost the day's drink, and the buff with it, for want of one more press.
+    """
+
+    def test_a_drink_confirmed_on_the_first_press(self):
+        task = _Drink(confirms=(True,))
+        self.assertTrue(task.make_drink())
+        self.assertEqual(['Make', 'Confirm'], task.pressed)
+        self.assertTrue(task.finished)
+
+    def test_a_press_that_did_not_take_is_pressed_once_more(self):
+        task = _Drink(confirms=(False, True))
+        self.assertTrue(task.make_drink())
+        self.assertEqual(['Make', 'Make', 'Confirm'], task.pressed)
+
+    def test_it_stops_after_the_second_press(self):
+        """A screen that ignores two presses will ignore a third, and the frame is what says why."""
+        task = _Drink(confirms=(False, False, True))
+        self.assertFalse(task.make_drink())
+        self.assertEqual(['Make', 'Make'], task.pressed)
+        self.assertTrue(task.dumped)
+
+    def test_it_does_not_press_again_once_make_has_gone(self):
+        """No Make on screen means the screen moved on to something else, and pressing where it was would land on whatever that is."""
+        task = _Drink(confirms=(False,), make_stays=False)
+        self.assertFalse(task.make_drink())
+        self.assertEqual(['Make'], task.pressed)
+        self.assertTrue(task.dumped)
+
+    def test_no_make_button_presses_nothing(self):
+        task = _Drink(has_make=False)
+        self.assertFalse(task.make_drink())
+        self.assertEqual([], task.pressed)
+
+
 class TestWaterScreenRegions(unittest.TestCase):
     """The flower screen draws Water and Fertilize side by side, each a round button with a counter underneath reading exactly the same shape.
 

@@ -280,6 +280,10 @@ WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
 WATER_CONFIRM_READS = 2
 WATER_CONFIRM_PAUSE = 2
 
+# How many times to press Make before giving up on its confirmation. Two, because upstream saw a first press not take on the CN client, and a
+# screen that ignores two presses is not going to answer a third.
+MAKE_PRESSES = 2
+
 # How many times to press Escape getting off the flower screen, and how long to give the deck to come back
 # after each press. Watering plays no scene, but it does play an animation that swallows Escape for several
 # seconds - a live run spent three presses inside one and closed nothing - so the presses are spaced by
@@ -1330,18 +1334,22 @@ class GlobalDailyTask(BaseGlobalTask):
         Returns:
             True when the drink was confirmed, False when either step was missing.
         """
-        if not self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
-            self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
-            return False
-        # Make raises a Caution dialog - "Do you wish to make X? N time(s) remaining today" - with Cancel
-        # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
-        # two can never be hit. Nothing is made until this lands.
-        if not self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
-            self.log_info('Tea Time: the Make confirmation never appeared, so no drink was made.', notify=True)
-            self.dump_screen('crew_deck_Tea_Time_no_confirm')
-            return False
-        self.finish_activity('Tea Time')
-        return True
+        for press in range(MAKE_PRESSES):
+            # Pressed again only while Make is still there. Once it has gone the screen has moved on, and its old spot is something else.
+            if not self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
+                if press:
+                    break
+                self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
+                return False
+            # Make raises a Caution dialog - "Do you wish to make X? N time(s) remaining today" - with Cancel
+            # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
+            # two can never be hit. Nothing is made until this lands.
+            if self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
+                self.finish_activity('Tea Time')
+                return True
+        self.log_info('Tea Time: the Make confirmation never appeared, so no drink was made.', notify=True)
+        self.dump_screen('crew_deck_Tea_Time_no_confirm')
+        return False
 
     def cook_dish(self):
         """Cook a dish from the first two ingredients, then invite whichever doll is preselected.
