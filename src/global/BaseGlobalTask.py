@@ -8,7 +8,7 @@ import win32api
 
 from ok import CaptureException, FinishedException, TaskDisabledException
 from src.data.FeatureList import FeatureList as fL
-from src.tasks.BaseGfTask import BaseGfTask
+from src.core.BaseGfTask import BaseGfTask
 
 # What ends the whole run rather than the one flow that raised it: the task was stopped, the app is quitting,
 # and the game window is gone. `run_flows` steps over anything else, but for these there is no next flow to

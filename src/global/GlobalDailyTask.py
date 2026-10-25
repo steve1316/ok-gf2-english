@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 from ok import Box, find_boxes_by_name
 
-from src.tasks.BaseGfTask import map_re, parse_time_option
+from src.core.BaseGfTask import map_re, parse_time_option
 
 from .BaseGlobalTask import CANCEL, CLAIM_ALL, CLICK_ANYWHERE, CONFIRM, COUNTER, CREW_DECK, PAGE_DRAW_PAUSE, PROCEED, SHOP, SKIP, BaseGlobalTask
 
