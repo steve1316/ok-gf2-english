@@ -203,9 +203,12 @@ class TestPurchaseSafety(unittest.TestCase):
 
     def test_price_pattern_matches_money_and_not_dialog_prose(self):
         daily = importlib.import_module('src.global.GlobalDailyTask')
-        for money in ('$ 9.99', '$0.99', '0.99'):
+        for money in ('$ 9.99', '$0.99', '0.99', '11.99'):
             self.assertTrue(daily.PRICE.search(money), f'{money!r} must block a purchase')
-        for prose in ('Current progress: 12/21', 'Daily Limit 1/1', '3 Hours', 'Free', 'Daily Supply Box'):
+        # Then three live reads of a blurred line at the foot of the free dialog - the dotted one refused the weekly box on 2026-10-19 - and the
+        # same line with its dot landing two digits from the end.
+        for prose in ('Current progress: 12/21', 'Daily Limit 1/1', '3 Hours', 'Free', 'Daily Supply Box',
+                      '001002820.5589', '0010828205589', '0010100828205589', '00100282.05'):
             self.assertFalse(daily.PRICE.search(prose), f'{prose!r} appears in the free dialog and must not block it')
 
 
