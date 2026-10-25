@@ -1246,9 +1246,9 @@ class TestRegionExtras(unittest.TestCase):
         self.assertEqual([], config['trigger_tasks'])
 
     def test_cn_keeps_them(self):
-        config = self.applied('CN')
-        self.assertEqual(self.config()['custom_tabs'], config['custom_tabs'])
-        self.assertEqual(self.config()['trigger_tasks'], config['trigger_tasks'])
+        config, expected = self.applied('CN'), self.config()
+        self.assertEqual(expected['custom_tabs'], config['custom_tabs'])
+        self.assertEqual(expected['trigger_tasks'], config['trigger_tasks'])
 
 
 class TestSwipeRecovery(unittest.TestCase):
@@ -1870,12 +1870,11 @@ class _Drink:
 
     make_drink = GlobalDailyTask.make_drink
 
-    def __init__(self, confirms=(True,), has_make=True, make_stays=True):
+    def __init__(self, confirms=(True,), make_shown=None):
         # One entry per press of Make, saying whether the confirmation came up after it.
         self.confirms = list(confirms)
-        self.has_make = has_make
-        # Whether Make is still on screen after a press that raised nothing.
-        self.make_stays = make_stays
+        # How many looks find Make on screen. None keeps it there for good.
+        self.make_shown = make_shown
         self.dialog = False
         self.pressed = []
         self.dumped = []
@@ -1892,8 +1891,8 @@ class _Drink:
         self.finished = True
 
     def wait_click_ocr(self, match=None, **kwargs):
-        if match.pattern == '^Make$':
-            if not self.has_make or (self.pressed and not self.make_stays):
+        if match is importlib.import_module('src.global.GlobalDailyTask').MAKE:
+            if self.make_shown is not None and self.pressed.count('Make') >= self.make_shown:
                 return None
             self.pressed.append('Make')
             self.dialog = self.confirms.pop(0) if self.confirms else False
@@ -1907,7 +1906,8 @@ class _Drink:
 class TestMakeDrink(unittest.TestCase):
     """Make raises a Caution dialog, and nothing is made until its Confirm is pressed.
 
-    Upstream saw the press on Make not take on the CN client. Giving up there lost the day's drink, and the buff with it, for want of one more press.
+    Upstream saw the press on Make not take on the CN client, with Alt left held after the Alt-click in. Giving up there lost the day's drink, and the
+    buff with it, for want of one more press.
     """
 
     def test_a_drink_confirmed_on_the_first_press(self):
@@ -1930,13 +1930,13 @@ class TestMakeDrink(unittest.TestCase):
 
     def test_it_does_not_press_again_once_make_has_gone(self):
         """No Make on screen means the screen moved on to something else, and pressing where it was would land on whatever that is."""
-        task = _Drink(confirms=(False,), make_stays=False)
+        task = _Drink(confirms=(False,), make_shown=1)
         self.assertFalse(task.make_drink())
         self.assertEqual(['Make'], task.pressed)
         self.assertTrue(task.dumped)
 
     def test_no_make_button_presses_nothing(self):
-        task = _Drink(has_make=False)
+        task = _Drink(make_shown=0)
         self.assertFalse(task.make_drink())
         self.assertEqual([], task.pressed)
 
@@ -1945,6 +1945,7 @@ class _Dialogs:
     """A stand-in for a task clicking through story dialogue, fed one scripted OCR read per pass and counting taps on the skip corner."""
 
     skip_dialogs = BaseGlobalTask.skip_dialogs
+    _is_loading_frame = BaseGlobalTask._is_loading_frame
 
     def __init__(self, frames):
         # One OCR read per pass. The end screen follows the last of them.

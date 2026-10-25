@@ -280,8 +280,8 @@ WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
 WATER_CONFIRM_READS = 2
 WATER_CONFIRM_PAUSE = 2
 
-# How many times to press Make before giving up on its confirmation. Two, because upstream saw a first press not take on the CN client, and a
-# screen that ignores two presses is not going to answer a third.
+# How many times to press Make before giving up on its confirmation. Upstream traced an ignored Make to Alt left held after the Alt-click into
+# Tea Time, which GfInteraction now releases. The second press is a fallback, and a screen that ignores two is not going to answer a third.
 MAKE_PRESSES = 2
 
 # How many times to press Escape getting off the flower screen, and how long to give the deck to come back
@@ -1334,19 +1334,19 @@ class GlobalDailyTask(BaseGlobalTask):
         Returns:
             True when the drink was confirmed, False when either step was missing.
         """
-        for press in range(MAKE_PRESSES):
-            # Pressed again only while Make is still there. Once it has gone the screen has moved on, and its old spot is something else.
-            if not self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
-                if press:
-                    break
-                self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
-                return False
+        pressed = 0
+        # Pressed again only while Make is still there. Once it has gone the screen has moved on, and its old spot is something else.
+        while pressed < MAKE_PRESSES and self.wait_click_ocr(match=MAKE, box=self.box.bottom_right, time_out=5, after_sleep=2):
+            pressed += 1
             # Make raises a Caution dialog - "Do you wish to make X? N time(s) remaining today" - with Cancel
             # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
             # two can never be hit. Nothing is made until this lands.
             if self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
                 self.finish_activity('Tea Time')
                 return True
+        if not pressed:
+            self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
+            return False
         self.log_info('Tea Time: the Make confirmation never appeared, so no drink was made.', notify=True)
         self.dump_screen('crew_deck_Tea_Time_no_confirm')
         return False
@@ -1413,7 +1413,8 @@ class GlobalDailyTask(BaseGlobalTask):
         Returns:
             True when the flower was watered or was already watered today, False when the Water button was not on screen or the press did not take.
         """
-        if self.uses_left(self.box_of_screen(*WATER_COUNTER_BAND), 'Water button') == 0:
+        counter = self.box_of_screen(*WATER_COUNTER_BAND)
+        if self.uses_left(counter, 'Water button') == 0:
             self.log_info('Water Flower: already watered today, so nothing to do.', notify=True)
             watered = True
         elif not self.wait_click_ocr(match=WATER, box=self.box_of_screen(*WATER_BUTTON_BAND), time_out=5, after_sleep=2):
@@ -1421,18 +1422,20 @@ class GlobalDailyTask(BaseGlobalTask):
             self.dump_screen('crew_deck_Water_Flower_no_button')
             watered = False
         else:
-            watered = self.confirm_watered()
+            watered = self.confirm_watered(counter)
         # One call rather than one per branch, so the screen cannot be left open by a path that forgets it.
         self.close_flower_screen()
         return watered
 
-    def confirm_watered(self):
+    def confirm_watered(self, counter):
         """Read the counter again after pressing Water, since the press is the one step that can quietly not take.
+
+        Args:
+            counter: The band under the Water button that holds its uses-left counter.
 
         Returns:
             True when the counter shows today's watering used, or could not be read at all. False when it still shows it unused.
         """
-        counter = self.box_of_screen(*WATER_COUNTER_BAND)
         for attempt in range(WATER_CONFIRM_READS):
             if attempt:
                 self.sleep(WATER_CONFIRM_PAUSE)

@@ -918,6 +918,17 @@ class BaseGlobalTask(BaseGfTask):
             else:
                 self.back(after_sleep=POP_UP_AFTER_CLICK)
 
+    def _is_loading_frame(self, boxes):
+        """Upstream's loading-screen hook, matched on the English label. An empty read is a loading or fading frame too.
+
+        Args:
+            boxes: One OCR read of the whole screen.
+
+        Returns:
+            True when the frame is a loading screen or carries no text at all.
+        """
+        return not boxes or bool(self.find_boxes(boxes, match=LOADING))
+
     def skip_dialogs(self, end_match, end_box=None, time_out=120, has_dialog=True, raise_if_not_found=True):
         """Click through story dialogue until one of `end_match` appears.
 
@@ -957,8 +968,7 @@ class BaseGlobalTask(BaseGfTask):
                 self.back()
                 self.sleep(1)
             else:
-                # An empty read is a loading or fading frame too, so it is waited out like one.
-                if has_dialog and boxes and not self.find_boxes(boxes, match=LOADING):
+                if has_dialog and not self._is_loading_frame(boxes):
                     self.click_relative(0.95, 0.04)
                 self.sleep(2)
             self.next_frame()
