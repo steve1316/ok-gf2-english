@@ -307,10 +307,9 @@ STATION_TOGGLES = (
 # generous one spends its whole budget on a question the first redraw already answered.
 SCREEN_SETTLE_TIME_OUT = 5
 
-# How many times to look for the loaded deck, and how long to wait for a station prompt once the walk
-# has finished. The first is a count, not seconds: `is_free_layer` divides it by its own interval and
-# each attempt costs up to the framework's scene timeout of 10s, so 25 was a four-minute stall.
-CREW_DECK_LOAD_ATTEMPTS = 3
+# How long to wait for the loaded deck, and for a station prompt once the walk has finished. `is_free_layer` used to count attempts of up to
+# 10s each, and 3 of them gave the deck ~30s to load. It takes seconds now, so the same budget is spelled out rather than shrunk to 3s.
+CREW_DECK_LOAD_TIME_OUT = 30
 STATION_PROMPT_TIME_OUT = 4
 
 # Fast travel, used to put the character back on the entrance spot after a walk misses its prompt. The walk
@@ -1180,7 +1179,7 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         # Confirmed by the movement key hints along the top, which read the same in every language. Waiting
         # on those rather than on a title also means the deck is not merely open but finished loading.
-        if not self.is_free_layer(time_out=CREW_DECK_LOAD_ATTEMPTS):
+        if not self.is_free_layer(time_out=CREW_DECK_LOAD_TIME_OUT):
             self.log_info('The Crew Deck did not finish loading into its walkable view.')
             return False
         return True
@@ -1220,7 +1219,7 @@ class GlobalDailyTask(BaseGlobalTask):
             return False
         header = min(lounge, key=lambda box: box.y)
         self.click(LOUNGE_TRAVEL_X, (header.y + header.height / 2) / self.height)
-        if not self.is_free_layer(time_out=CREW_DECK_LOAD_ATTEMPTS):
+        if not self.is_free_layer(time_out=CREW_DECK_LOAD_TIME_OUT):
             self.log_info('Fast travel: the Lounge did not finish loading into its walkable view.')
             return False
         return True
