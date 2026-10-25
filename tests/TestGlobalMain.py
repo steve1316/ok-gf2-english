@@ -1270,7 +1270,7 @@ class TestSwipeRecovery(unittest.TestCase):
         release.assert_called_once()
 
     def test_an_interaction_without_a_release_is_tolerated(self):
-        """`PostMessage` is selectable on the Start tab and does not offer the same surface."""
+        """An interaction picked on the Start tab need not offer the same surface."""
         self.base().BaseGlobalTask.release_mouse(self.task(types.SimpleNamespace()))
 
     def test_a_refused_release_is_logged_rather_than_raised(self):
