@@ -1,7 +1,7 @@
 import os
 
-import numpy as np
-from ok import Config
+from src.core.gf_interaction import GfInteraction
+from src.core.input_config import input_option
 
 version = "dev"
 # 不需要修改version, Github Action打包会自动修改
@@ -18,15 +18,13 @@ config = {
     "ocr": {"lib": "onnxocr", "params": {"use_openvino": True}},  # 可选, 使用的OCR库
     "windows": {  # Windows游戏请填写此设置
         "exe": ["GF2_Exilium.exe"],  # 新版统一使用 list
-        'hwnd_class': 'UnityWndClass',
+        "hwnd_class": "UnityWndClass",
         # A list renders the "Choose Interaction" picker on the Start tab. A bare string hides it.
-        # Genshin must stay first: it is the only one that works everywhere, because it warps the real
-        # cursor onto the game (SetCursorPos) and blocks input for the duration of each click.
-        # PostMessage posts window messages only, so it neither steals focus nor moves the mouse - but
-        # it has been tried against this game and some dialogs ignore it. The leave-the-Crew-Deck
-        # confirmation is one. Partial support is worse than none, since flows half-complete, so treat
-        # PostMessage as an experiment rather than a background mode that works.
-        "interaction": ["Genshin", "PostMessage"],
+        # GfInteraction first: it is Genshin plus a real key-up. Genshin's key-up fakes a focus loss instead, and upstream saw the game then ignore
+        # Make and Escape after the Alt-click into Tea Time. It drives the real mouse only when the Interception driver is installed and chosen in
+        # settings, and otherwise acts as Genshin. PostMessage never steals focus, but some dialogs ignore it - the leave-the-Crew-Deck confirmation
+        # among them - and partial support is worse than none, since flows half-complete. Treat it as an experiment.
+        "interaction": [GfInteraction, "Genshin", "PostMessage"],
         "capture_method": ["WGC", "BitBlt_RenderFull"],
         # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full. 支持的capture有 BitBlt, WGC, BitBlt_RenderFull, DXGI
         "check_hdr": True,  # 当用户开启AutoHDR时候提示用户, 但不禁止使用
@@ -34,11 +32,11 @@ config = {
         "require_bg": True,  # 要求使用后台截图
     },
     # 模板标签配置信息
-    'template_tab': {
-    # 是否生成标签枚举
-        'generate_label_enum': True,
-    # 标签枚举的相对路径
-        'label_enum_relative_path': 'src/data/FeatureList',
+    "template_tab": {
+        # 是否生成标签枚举
+        "generate_label_enum": True,
+        # 标签枚举的相对路径
+        "label_enum_relative_path": "src/data/FeatureList",
     },
     "start_timeout": 60,  # default 60
     "window_size": {"width": 1200, "height": 800, "min_width": 600, "min_height": 450},  # ok-script窗口大小
@@ -80,7 +78,29 @@ config = {
         ["src.tasks.TestTask", "TestTask"],
         ["ok", "DiagnosisTask"],
     ],
+    "trigger_tasks": [  # 循环触发的任务
+        ["src.tasks.TemplateMonitorTask", "TemplateMonitorTask"],
+    ],
+    "global_configs": [input_option],  # 全局配置：设置页里的「输入」
+    "custom_tabs": [  # 自定义界面页
+        ["src.gui.AccountConfigTab", "AccountConfigTab"],
+        ["src.gui.ImportantNoticesTab", "ImportantNoticesTab"],
+    ],
 }
+
+from src.patches.input_safety_patch import install_input_safety_patch  # noqa: E402
+
+install_input_safety_patch()
+
+# OCR 错字兼容：读取 assets/ocr_fix/ocr_text_fix.json，让 match 文本容忍形近/繁简错字
+from src.patches.ocr_text_fix_patch import install_ocr_text_fix_patch  # noqa: E402
+
+install_ocr_text_fix_patch()
+
+# 退出时不激活已关闭的游戏窗口，并确认启动器身份后终止。
+from src.patches.shutdown_patch import install_shutdown_patch  # noqa: E402
+
+install_shutdown_patch()
 
 # Imported down here rather than at the top so this stays a single append-at-EOF hunk, which keeps merges
 # from upstream clean. apply_region swaps onetime_tasks to match the selected game client.
