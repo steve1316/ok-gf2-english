@@ -1223,6 +1223,34 @@ class TestRegionHiding(unittest.TestCase):
         self.assertFalse(self.region().already_hidden(Fresh))
 
 
+class TestRegionExtras(unittest.TestCase):
+    """Upstream's own tabs and trigger tasks are for the CN client, so a Global install should not show them."""
+
+    def config(self):
+        return {
+            'onetime_tasks': [['src.tasks.DailyTask', 'DailyTask']],
+            'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
+            'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
+        }
+
+    def applied(self, region_name):
+        region = importlib.import_module('src.region')
+        config = self.config()
+        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_hide_tasks'):
+            region.apply_region(config)
+        return config
+
+    def test_global_drops_the_cn_tabs_and_trigger_tasks(self):
+        config = self.applied('Global')
+        self.assertEqual([], config['custom_tabs'])
+        self.assertEqual([], config['trigger_tasks'])
+
+    def test_cn_keeps_them(self):
+        config = self.applied('CN')
+        self.assertEqual(self.config()['custom_tabs'], config['custom_tabs'])
+        self.assertEqual(self.config()['trigger_tasks'], config['trigger_tasks'])
+
+
 class TestSwipeRecovery(unittest.TestCase):
     """A refused cursor move during a swipe leaves the mouse button held.
 
