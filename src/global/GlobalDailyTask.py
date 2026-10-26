@@ -169,6 +169,9 @@ BADGE_ROW_TOLERANCE = 0.04
 # "Purchase" and would match that heading and the dialog's own title just as readily as either button.
 PURCHASE_ALL = re.compile(r'Purchase All', re.I)
 PURCHASE_CONFIRM = re.compile(r'Purchase\(?s\)?', re.I)
+# The confirmation dialog's title, the proof that Purchase All opened anything. A category short of currency
+# draws no dialog at all and leaves its rows on screen, so Back there leaves the Wishlist instead of a dialog.
+PURCHASE_DETAILS = re.compile(r'Purchase ?Details', re.I)
 
 # Any sign of a real-money price. The free box and the paid one are two tabs of a single popup and carry
 # an identical Purchase button, and claiming the free box switches the popup to the paid tab, so the item
@@ -842,10 +845,13 @@ class GlobalDailyTask(BaseGlobalTask):
         # whether there is anything here rather than a step that is expected to succeed.
         if not self.wait_click_ocr(match=PURCHASE_ALL, box=self.box.bottom_right, time_out=3, after_sleep=2):
             return False
+        dialog = self.ocr(box=self.box_of_screen(*DIALOG_BAND), log=True)
+        if not self.find_boxes(dialog, match=PURCHASE_DETAILS):
+            self.log_info(f'{label}: Purchase All opened no dialog, most likely not enough currency. Skipping it.', notify=True)
+            return False
         # Everything on the Wishlist trades in an in-game currency, so a real-money price here means this is
         # not the dialog it looks like. Checked before anything in it is pressed, the same way a free supply
         # box is checked before its Purchase.
-        dialog = self.ocr(box=self.box_of_screen(*DIALOG_BAND), log=True)
         if priced := self.find_boxes(dialog, match=PRICE):
             self.log_info(f'{label}: the confirmation shows a real-money price ({priced[0].name}), backing out without buying', notify=True)
             self.back(after_sleep=1)

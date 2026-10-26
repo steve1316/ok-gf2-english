@@ -2348,6 +2348,41 @@ class _Rail:
         pass
 
 
+class _Checkout:
+    """A stand-in for the daily task sitting on one Wishlist category, fed one fixed read of what Purchase All left on screen.
+
+    Borrows the real `purchase_category`, and counts presses of Back. The dialog's own button is only found when the read holds one.
+    """
+
+    purchase_category = GlobalDailyTask.purchase_category
+
+    def __init__(self, after_purchase_all):
+        self.after_purchase_all = after_purchase_all
+        self.box = types.SimpleNamespace(bottom_right=None)
+        self.backs = 0
+
+    def wait_click_ocr(self, match=None, **kwargs):
+        return bool(match.search('Purchase All') or find_boxes_by_name(self.after_purchase_all, match))
+
+    def box_of_screen(self, *args):
+        return None
+
+    def ocr(self, *args, **kwargs):
+        return self.after_purchase_all
+
+    def find_boxes(self, boxes, match=None, boundary=None):
+        return find_boxes_by_name(boxes, match)
+
+    def back(self, after_sleep=0):
+        self.backs += 1
+
+    def wait_pop_up(self, **kwargs):
+        pass
+
+    def log_info(self, message, notify=False):
+        pass
+
+
 class TestWishlistBadges(unittest.TestCase):
     """The rail is read once and only the categories carrying a count are opened.
 
@@ -2419,6 +2454,36 @@ class TestWishlistButtons(unittest.TestCase):
         keys = {key for key, _, _ in daily.FLOWS}
         for key in daily.FLOWS_OFF_BY_DEFAULT:
             self.assertIn(key, keys, f'{key!r} is switched off by default but is not a flow')
+
+
+class TestWishlistCheckout(unittest.TestCase):
+    """What Purchase All leaves on screen decides whether the flow confirms, backs out, or simply moves on.
+
+    Both reads are live ones from 2026-10-26 and 2026-08-24 at 1920x1080.
+    """
+
+    def short_of_currency(self):
+        """Platoon Shop wanting 12000 against 6545 on hand. The game draws no dialog and leaves the Wishlist rows where they were."""
+        return [Box(286, 165, 390, 40, name="Balthilde's Neural Archive ×1"), Box(943, 163, 130, 30, name='Number:5'),
+                Box(347, 210, 130, 30, name='Weekly Limit 5'), Box(286, 335, 580, 40, name='Military Grade Base Component Random Box'),
+                Box(286, 478, 410, 40, name='Apex Component Random Box')]
+
+    def dialog(self):
+        """The Purchase Details dialog that a category with enough currency opens."""
+        return [Box(400, 260, 390, 40, name="Balthilde's Neural Archive ×1"), Box(943, 300, 130, 30, name='Number: 5'),
+                Box(860, 180, 200, 36, name='Purchase Details'), Box(1100, 300, 80, 30, name='20311'),
+                Box(1160, 815, 140, 36, name='Purchase(s)')]
+
+    def test_no_dialog_means_nothing_to_back_out_of(self):
+        """Pressing Back here left the Wishlist itself, so every category after Platoon went unbought on 2026-10-26."""
+        task = _Checkout(self.short_of_currency())
+        self.assertFalse(task.purchase_category('Platoon'))
+        self.assertEqual(0, task.backs, 'Back pressed with no dialog open, which leaves the Wishlist')
+
+    def test_an_open_dialog_is_confirmed(self):
+        task = _Checkout(self.dialog())
+        self.assertTrue(task.purchase_category('Platoon'))
+        self.assertEqual(0, task.backs)
 
 
 class TestFlowOrder(unittest.TestCase):
