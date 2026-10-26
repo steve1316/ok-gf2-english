@@ -3,8 +3,6 @@
 import re
 
 import cv2
-import win32api
-import win32gui
 
 from src.core.BaseGfTask import stamina_re
 
@@ -204,15 +202,76 @@ class DailyBattleMixin:
                 self.ensure_main()
                 return False
 
-            self.wait_click_ocr(match=["补给"], box=self.box.bottom_right, after_sleep=0.5)
-            if result := self.wait_ocr(
-                match=["领取全部"], box=self.box.bottom_right, time_out=4, raise_if_not_found=False
-            ):
-                self.click_box(result)
-                self.wait_pop_up(count=1)
+            if not self._claim_guild_supply():
+                self.ensure_main()
+                return False
             self.back()
             self.sleep(1)
         self.ensure_main()
+
+    def _guild_supply_status(self):
+        """确认补给列表，并结合按钮文字与颜色判断是否仍有奖励。"""
+        if not self.ocr(match=["分配中", "已分配"], box=self.box.top_right):
+            return None
+        individual = self.ocr(match=re.compile(r"^\s*领取\s*$"), box=self.box_of_screen(0.82, 0.20, 0.98, 0.87))
+        bulk = self.ocr(match="领取全部", box=self.box.bottom_right)
+        frame = self.frame
+        if frame is None or frame.size == 0:
+            return None
+        height, width = frame.shape[:2]
+        buttons = frame[int(height * 0.20) : int(height * 0.87), int(width * 0.86) : int(width * 0.95), :3]
+        footer = frame[int(height * 0.89) : int(height * 0.94), int(width * 0.79) : int(width * 0.95), :3]
+        if not buttons.size or not footer.size:
+            return None
+        green = (
+            (buttons[:, :, 1] > 100)
+            & (buttons[:, :, 1] > buttons[:, :, 2] * 1.15)
+            & (buttons[:, :, 1] > buttons[:, :, 0] * 1.1)
+        )
+        yellow = (footer[:, :, 2] > 170) & (footer[:, :, 1] > 110) & (footer[:, :, 0] < 120)
+        pending = bool(individual) or bool(bulk) or yellow.mean() > 0.10
+        if not pending and green.mean() < 0.03:
+            return None
+        return {"pending": pending, "individual": individual, "bulk": bulk}
+
+    def _claim_guild_supply(self):
+        """领取后重新核对列表，批量点击无效时尝试单项，最多五次。"""
+        self.info_set("班组补给", "检查中")
+        self.wait_click_ocr(match=["补给"], box=self.box.bottom_right, time_out=3, after_sleep=0.5)
+        attempted = False
+        for attempt in range(5):
+            status = self.wait_until(self._guild_supply_status, time_out=3, settle_time=0.3)
+            if status is None:
+                break
+            if not status["pending"]:
+                self.info_set("班组补给", "领取已确认" if attempted else "已领取，无可领取补给")
+                return True
+            target = status["individual"] if attempt and status["individual"] else status["bulk"]
+            if not target:
+                target = status["individual"]
+            if not target:
+                break
+            self.click_box(target, after_sleep=0.5)
+            attempted = True
+            if self.wait_ocr(match=["获得道具", "点击空白处关闭"], time_out=3, raise_if_not_found=False):
+                self.back(after_sleep=0.5)
+            self.next_frame()
+            confirmed = self.wait_until(
+                lambda: (current := self._guild_supply_status()) and not current["pending"],
+                time_out=2,
+                settle_time=0.3,
+            )
+            if confirmed:
+                self.info_set("班组补给", "领取已确认")
+                return True
+            self.log_warning(f"班组补给领取尚未确认，重试 {attempt + 1}/5")
+        reason = "班组补给待核查：仍有可领项或未确认补给列表"
+        self.info_set("班组补给", reason)
+        runner = getattr(self, "daily_runner", None)
+        if runner is not None:
+            runner.set_task_failure(reason)
+        self.screenshot("guild_supply_unconfirmed")
+        return False
 
     def chenyan(self):
         """按当前剩余票数执行尘烟，每次作战后重新读取次数。"""
@@ -223,12 +282,25 @@ class DailyBattleMixin:
             """记录失败原因并保留现场，向调用者返回明确失败。"""
             self.log_warning(f"尘烟未完成：{reason}")
             self.info_set("尘烟前线", f"待核查：{reason}")
+            runner = getattr(self, "daily_runner", None)
+            if runner is not None:
+                runner.set_task_failure(f"尘烟未完成：{reason}")
             self.screenshot("Chenyan_EntryOrTicketsFailed")
             return False
 
         end = self.wait_ocr(match=re.compile("前线"), box=self.box.bottom_right, time_out=5, log=True)
         if not end:
             return failed("未找到尘烟前线入口")
+        if closed := self.wait_ocr(
+            match=re.compile(r"\d+\s*(?:天|小时|分钟|秒).*后\s*开\s*启"),
+            box=self.box.bottom_right,
+            time_out=2,
+            raise_if_not_found=False,
+        ):
+            reason = f"未开放：{closed[0].name}，已跳过"
+            self.info_set("尘烟前线", reason)
+            self.log_info(f"尘烟前线{reason}，继续班组补给")
+            return True
         self.click(end, after_sleep=1)
         # 页面切换和后台截图可能延迟；先确认尘烟页，避免把其他页面的数字当成次数。
         if not self.wait_ocr(match="攻坚战", box=self.box.top_right, time_out=10, log=True):
@@ -267,7 +339,7 @@ class DailyBattleMixin:
         return True
 
     def _scroll_chenyan_list(self, count):
-        """可取消地滚动一页；Unity 列表需要前台的真实滚轮。"""
+        """可取消地滚动一页；PC 临时切前台，结束后恢复窗口和鼠标。"""
         self.sleep(0.01)
         executor = getattr(self, "executor", None)
         if executor is not None and executor.paused:
@@ -276,48 +348,12 @@ class DailyBattleMixin:
             self.swipe_relative(0.65, 0.72 if count > 0 else 0.40, 0.65, 0.40 if count > 0 else 0.72, duration=0.3)
         else:
             interaction = getattr(executor, "interaction", None)
-            scroll = getattr(interaction, "do_scroll", None)
+            scroll = getattr(interaction, "scroll", None)
             if not callable(scroll):
-                scroll = getattr(interaction, "scroll", None)
-            if not callable(scroll):
-                raise RuntimeError("当前输入后端不支持助战列表真实滚轮")
-            hwnd = self.hwnd.hwnd
-            if not win32gui.IsWindow(hwnd):
-                raise RuntimeError("助战列表滚动失败：游戏窗口无效")
-            previous_window = win32gui.GetForegroundWindow()
-            previous_cursor = win32api.GetCursorPos()
-            try:
-                if previous_window != hwnd:
-                    try:
-                        win32gui.SetForegroundWindow(hwnd)
-                    except Exception as error:
-                        raise RuntimeError("助战列表滚动失败：游戏未进入前台") from error
-                    self.sleep(0.05)
-                if win32gui.GetForegroundWindow() != hwnd:
-                    raise RuntimeError("助战列表滚动失败：游戏未进入前台")
-                x, y = int(self.width * 0.65), int(self.height * 0.60)
-                win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, (x, y)))
-                self.sleep(0.1)
-                if executor.paused:
-                    return False
-                if win32gui.GetForegroundWindow() != hwnd:
-                    raise RuntimeError("助战列表滚动失败：游戏失去前台焦点")
-                scroll(x, y, -3 if count > 0 else 3)
-                self.sleep(0.15)
-            finally:
-                try:
-                    win32api.SetCursorPos(previous_cursor)
-                except Exception:
-                    self.log_warning("助战滚动后恢复鼠标位置失败")
-                if (
-                    previous_window != hwnd
-                    and win32gui.IsWindow(previous_window)
-                    and win32gui.GetForegroundWindow() == hwnd
-                ):
-                    try:
-                        win32gui.SetForegroundWindow(previous_window)
-                    except Exception:
-                        self.log_warning("助战滚动后恢复原窗口失败")
+                raise RuntimeError("当前输入后端不支持助战列表滚动")
+            x, y = int(self.width * 0.65), int(self.height * 0.60)
+            scroll(x, y, -3 if count > 0 else 3)
+            self.sleep(0.15)
         self.sleep(0.05)
         return True
 
