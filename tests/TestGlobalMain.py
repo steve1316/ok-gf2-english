@@ -99,6 +99,60 @@ class TestGlobalMain(TaskTestCase):
         self.assertEqual([('sleep', base.BUTTON_PAUSE), ('press',)], done)
         self.assertNotIn('settle_time', looked.call_args.kwargs)
 
+    def topics_on(self, name):
+        """Read Tea Time's talk topics off a kept frame, the way `pick_new_topic` does.
+
+        Args:
+            name: The fixture's filename under `tests/images/`, without the extension.
+
+        Returns:
+            Each topic's OCR box, by name.
+        """
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        self.set_image(f'tests/images/{name}.png')
+        return {topic.name: topic for topic in self.task.ocr(match=daily.TOPIC, box=self.task.box_of_screen(*daily.TOPIC_BAND))}
+
+    def picked_on(self, name):
+        """The names of the topics on a kept frame that carry the check.
+
+        Args:
+            name: The fixture's filename under `tests/images/`, without the extension.
+
+        Returns:
+            The set of topic names that read as picked before.
+        """
+        return {label for label, topic in self.topics_on(name).items() if self.task.topic_is_picked(topic, self.task.frame)}
+
+    def test_every_tea_time_topic_is_read(self):
+        """The picked one is drawn in faded text, and it still has to be read to be told apart rather than missed."""
+        names = {'About Pets', 'About Leadership', 'About Perfectionism', 'About Bikes', 'About Exclusivity'}
+        self.assertEqual(names, set(self.topics_on('tea_time_topics_none_picked')))
+        self.assertEqual(names, set(self.topics_on('tea_time_topics_one_picked')))
+
+    def test_only_the_checked_topic_reads_as_picked(self):
+        """The same scene before and after About Leadership was picked. Nothing else on either frame carries any green-dominant pixel at all."""
+        self.assertEqual(set(), self.picked_on('tea_time_topics_none_picked'))
+        self.assertEqual({'About Leadership'}, self.picked_on('tea_time_topics_one_picked'))
+
+    def test_a_checked_topic_is_passed_over_even_when_read_first(self):
+        """Read order is left to OCR, so the checked topic is put first to show it is the check that decides, not the position."""
+        topics = self.topics_on('tea_time_topics_one_picked')
+        offered = [topics['About Leadership'], topics['About Bikes']]
+        with (
+            mock.patch.object(self.task, 'wait_ocr', return_value=offered),
+            mock.patch.object(self.task, 'sleep'),
+            mock.patch.object(self.task, 'click') as clicked,
+        ):
+            self.assertTrue(self.task.pick_new_topic('Tea Time'))
+        self.assertEqual('About Bikes', clicked.call_args.args[0].name)
+
+    def test_a_scene_whose_topics_are_all_picked_clicks_none(self):
+        """It still answers that the choice was seen, so the scene stops spending a look on it before every Skip."""
+        topics = self.topics_on('tea_time_topics_one_picked')
+        with mock.patch.object(self.task, 'wait_ocr', return_value=[topics['About Leadership']]), mock.patch.object(self.task, 'click') as clicked:
+            self.assertTrue(self.task.pick_new_topic('Tea Time'))
+        clicked.assert_not_called()
+
 
 class TestMenuLabelFilter(unittest.TestCase):
     """Guards the home-screen check against text that merely mentions the menu entries.
@@ -520,6 +574,49 @@ class TestActivityStart(unittest.TestCase):
         screen.finish_activity('Tea Time')
         self.assertEqual(0, screen.skips)
         self.assertTrue(any('no scene started' in message for message in screen.logged))
+
+
+class _TopicScene(_Activity):
+    """The Tea Time scene, offering its talk topics from a given look on and on every look after - the worst case for picking more than one."""
+
+    def __init__(self, offered_from=0):
+        super().__init__(scene_at=0, presses_to_clear=2)
+        # How many looks miss the bubbles first. More than none is a scene that opens on dialogue before its choice.
+        self.offered_from = offered_from
+        # Each look's `first` argument, in order.
+        self.topic_looks = []
+
+    def pick_new_topic(self, label, first=True):
+        self.topic_looks.append(first)
+        return len(self.topic_looks) > self.offered_from
+
+
+class TestTeaTimeTopics(unittest.TestCase):
+    """Tea Time's scene offers talk topics, and one never picked before is taken instead of skipping past the choice."""
+
+    def test_the_choice_is_looked_at_once_then_the_scene_is_skipped(self):
+        """Once across every pass of the clearing loop, not once per pass - the bubbles can linger after the click."""
+        screen = _TopicScene()
+        screen.finish_activity('Tea Time', topics=True)
+        self.assertEqual([True], screen.topic_looks)
+        self.assertEqual(2, screen.skips, 'the rest of the scene still has to be skipped')
+
+    def test_a_choice_after_some_dialogue_is_still_found(self):
+        """Only the first look waits for the bubbles. The one after a Skip reads once, since the press already slept while the screen settled."""
+        screen = _TopicScene(offered_from=1)
+        screen.finish_activity('Tea Time', topics=True)
+        self.assertEqual([True, False], screen.topic_looks)
+
+    def test_other_activities_never_look_for_topics(self):
+        """Each look costs a wait of its own, which the dish has no reason to pay."""
+        screen = _TopicScene()
+        screen.finish_activity('Delicious Cuisine')
+        self.assertEqual([], screen.topic_looks)
+
+    def test_the_drink_asks_for_topics(self):
+        task = _Drink(confirms=(True,))
+        task.make_drink()
+        self.assertTrue(task.topics)
 
 
 class _Collection:
@@ -1890,8 +1987,9 @@ class _Drink:
     def dump_screen(self, name):
         self.dumped.append(name)
 
-    def finish_activity(self, label):
+    def finish_activity(self, label, topics=False):
         self.finished = True
+        self.topics = topics
 
     def wait_click_ocr(self, match=None, **kwargs):
         if match is importlib.import_module('src.global.GlobalDailyTask').MAKE:
