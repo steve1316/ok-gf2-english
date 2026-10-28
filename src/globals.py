@@ -193,6 +193,11 @@ def translate_notifications():
 class Globals(QObject):
     def __init__(self, exit_event):
         super().__init__()
+        from src.debug import frame_log, remote
+
+        # Neither does anything outside a debug run.
+        frame_log.apply()
+        remote.apply()
         widen_settings_text_column()
         size_cards_by_height_for_width()
         align_card_action_buttons()

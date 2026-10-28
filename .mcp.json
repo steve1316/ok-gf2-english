@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gf2": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--script", "scripts/gf2_mcp.py"]
+    }
+  }
+}
