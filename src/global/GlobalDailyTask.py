@@ -1,11 +1,12 @@
 import re
 from typing import NamedTuple
 
+import numpy as np
 from ok import Box, find_boxes_by_name
 
 from src.core.BaseGfTask import map_re, parse_time_option
 
-from .BaseGlobalTask import CANCEL, CLAIM_ALL, CLICK_ANYWHERE, CONFIRM, COUNTER, CREW_DECK, PAGE_DRAW_PAUSE, PROCEED, SHOP, SKIP, BaseGlobalTask
+from .BaseGlobalTask import BUTTON_PAUSE, CANCEL, CLAIM_ALL, CLICK_ANYWHERE, CONFIRM, COUNTER, CREW_DECK, PAGE_DRAW_PAUSE, PROCEED, SHOP, SKIP, BaseGlobalTask
 
 # Event. Banners stack down the top-left of the home screen, up to three at a time, and the event worth
 # running is not always the top one. Only the first banner has a measured position - every event draws its
@@ -247,6 +248,29 @@ TO_BATTLE = re.compile(r'To Battle', re.I)
 # Experimental Dishes that can be effective at once 1/3". Anchored on the phrase rather than read as a
 # bare counter, because the ingredient tiles on the same screen are covered in counters of their own.
 ACTIVE_DISHES = re.compile(r'at once\s*(\d+)\s*/\s*\d+', re.I)
+
+# The talk topics Tea Time's scene offers once the drink is served, each an "About ..." speech bubble around
+# the doll. Anchored so a line of dialogue that merely contains the word is not taken for one, and read only
+# above the name plate, since the dialogue line under it can start with the same word.
+TOPIC = re.compile(r'^About\b', re.I)
+TOPIC_BAND = (0, 0.1, 1, 0.78)
+
+# A topic picked on an earlier visit carries a green check at the right end of its bubble. Bubbles are sized
+# to their text, so the check sits anywhere from ~100px (About Leadership) to ~210px (About Pets) past the
+# end of the words at 1920 wide - the reach covers the longer one with room to spare.
+TOPIC_CHECK_REACH = 0.14
+
+# What counts as the check. It measures about 53 more green than red or blue, peaking at 57, while every
+# unpicked bubble in the kept frames peaks at 0 - the bubbles are white and the bar behind them brown or
+# yellow, none of it green-dominant. A checked bubble reads ~0.056 green and an unchecked one exactly 0.0,
+# so both bounds sit in open space.
+TOPIC_GREEN_MARGIN = 30
+TOPIC_PICKED_FRACTION = 0.01
+
+# How long the first look waits for the topics before falling back to Skip. Skip is on screen the moment the
+# scene starts, which can be before the bubbles have animated in, and a Skip pressed then jumps the choice.
+# Looks after a Skip read once instead, since each press already sleeps while the screen settles.
+TOPIC_TIME_OUT = 2
 
 # Upper bounds on what follows an activity. The drink plays one scene, the dish two, one of which is
 # dialogue whose Skip has to be pressed once per line, and skipping a scene can raise a confirmation of
@@ -490,6 +514,21 @@ def blue_fraction(patch):
         return 0.0
     blue, red = patch[:, :, 0].astype(int), patch[:, :, 2].astype(int)
     return float(((blue - red > BUFF_BLUE_MARGIN) & (blue > BUFF_BLUE_FLOOR)).mean())
+
+
+def green_fraction(patch):
+    """How much of a patch is the green of a picked topic's check.
+
+    Args:
+        patch: The region past the end of a topic's text, in the BGR order OpenCV captures in.
+
+    Returns:
+        The fraction of the patch that is green, or 0.0 for a patch cropped clean off the edge of the frame.
+    """
+    if patch.size == 0:
+        return 0.0
+    blue, green, red = patch[:, :, 0].astype(int), patch[:, :, 1].astype(int), patch[:, :, 2].astype(int)
+    return float((green - np.maximum(blue, red) > TOPIC_GREEN_MARGIN).mean())
 
 
 def buff_is_lit(patch):
@@ -1350,7 +1389,7 @@ class GlobalDailyTask(BaseGlobalTask):
             # sitting beside Confirm. Matched by name rather than clicked by position, so the wrong one of the
             # two can never be hit. Nothing is made until this lands.
             if self.wait_click_ocr(match=CONFIRM, box=self.box.bottom, time_out=6, after_sleep=2):
-                self.finish_activity('Tea Time')
+                self.finish_activity('Tea Time', topics=True)
                 return True
         if not pressed:
             self.log_info('Tea Time: no Make button on the drink screen.', notify=True)
@@ -1459,7 +1498,7 @@ class GlobalDailyTask(BaseGlobalTask):
         self.dump_screen('crew_deck_Water_Flower_did_not_take')
         return False
 
-    def finish_activity(self, label):
+    def finish_activity(self, label, topics=False):
         """Clear the scenes and summaries that follow an activity, and record anything left unrecognised.
 
         Committing an activity plays one or more scenes, each offering Skip in the top right, and ends on a reward summary behind a Confirm. The drink plays
@@ -1474,6 +1513,7 @@ class GlobalDailyTask(BaseGlobalTask):
 
         Args:
             label: The station name, for the log and the screenshot filename.
+            topics: Whether the scene offers talk topics to pick from before it is skipped. Only Tea Time does.
         """
         # The scene does not start the instant the activity is committed - the game plays a transition
         # first, and a loop that looks during it finds nothing and concludes the activity is already over.
@@ -1487,7 +1527,9 @@ class GlobalDailyTask(BaseGlobalTask):
             if self.in_walkable_deck():
                 self.log_info(f'{label}: back in the Crew Deck, so the activity is done')
                 return
-            skipped = self.skip_scene(label)
+            skipped = self.skip_scene(label, topics=topics)
+            # The first pass sees the scene through to its end, so a later one only clears what follows it.
+            topics = False
             # A skip pass that found nothing has already waited out its own budget at a screen that did not
             # change, so the summary check does not need to be patient as well - a Confirm worth clicking
             # would have been there throughout. Only a pass that skipped something is followed by a screen
@@ -1499,7 +1541,7 @@ class GlobalDailyTask(BaseGlobalTask):
         self.wait_pop_up(time_out=10, count=3)
         self.dump_screen(f'crew_deck_{label}_after')
 
-    def skip_scene(self, label, time_out=SCENE_SKIP_TIME_OUT):
+    def skip_scene(self, label, time_out=SCENE_SKIP_TIME_OUT, topics=False):
         """Press Skip until it stops appearing.
 
         One press is not always enough. The dish ends on a line of dialogue, where Skip advances rather than exits, so it takes a press per line. Each look
@@ -1509,18 +1551,61 @@ class GlobalDailyTask(BaseGlobalTask):
             label: The station name, for the log.
             time_out: How long each look waits for Skip. Callers checking a screen that should already be settled pass a shorter one, since a scene that is
                 playing offers Skip straight away and only a scene mid-transition needs waiting for.
+            topics: Pick a talk topic not picked before, if the scene offers any, instead of skipping past the choice.
 
         Returns:
             How many times Skip was pressed.
         """
         presses = 0
         for _ in range(MAX_SCENE_SKIPS):
+            # Looked for until the choice has been seen once. The bubbles can still be fading out after a click,
+            # and a second look would take one of the others for a fresh choice and click it over the dialogue.
+            if topics and self.pick_new_topic(label, first=not presses):
+                topics = False
+                continue
             if not self.wait_click_ocr(match=SKIP, box=self.box.top_right, time_out=time_out, after_sleep=2):
                 break
             presses += 1
         if presses:
             self.log_info(f'{label}: pressed Skip {presses} time(s)')
         return presses
+
+    def pick_new_topic(self, label, first=True):
+        """Click a talk topic that does not carry the green check of one picked on an earlier visit.
+
+        Args:
+            label: The station name, for the log.
+            first: Whether this is the scene's first look, which waits for the bubbles to animate in rather than reading once.
+
+        Returns:
+            True when the scene offered topics, whether one was clicked or every one had been picked before. False when none were on screen.
+        """
+        band = self.box_of_screen(*TOPIC_BAND)
+        offered = self.wait_ocr(match=TOPIC, box=band, time_out=TOPIC_TIME_OUT) if first else self.ocr(match=TOPIC, box=band)
+        frame = self.frame
+        if not offered or frame is None:
+            return False
+        fresh = next((topic for topic in offered if not self.topic_is_picked(topic, frame)), None)
+        if fresh is None:
+            self.log_info(f'{label}: every topic offered has been picked before, so skipping instead')
+            return True
+        self.log_info(f'{label}: picking the topic "{fresh.name}"')
+        self.sleep(BUTTON_PAUSE)
+        self.click(fresh, after_sleep=2)
+        return True
+
+    def topic_is_picked(self, topic, frame):
+        """Whether a talk topic carries the green check of one picked on an earlier visit.
+
+        Args:
+            topic: The topic's OCR box, which covers its text but not the rest of its bubble.
+            frame: The frame the topic was read off.
+
+        Returns:
+            True when the stretch of bubble past the text holds the check.
+        """
+        check = Box(topic.x + topic.width, topic.y, int(self.width * TOPIC_CHECK_REACH), topic.height)
+        return green_fraction(check.crop_frame(frame)) >= TOPIC_PICKED_FRACTION
 
     def confirm_summary(self, label, time_out=SUMMARY_CONFIRM_TIME_OUT):
         """Press Confirm until it stops appearing.
