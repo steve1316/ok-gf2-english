@@ -4,6 +4,7 @@ from qfluentwidgets import FluentIcon
 
 from ok import ConfigOption, Logger
 from ok.util.file import get_relative_path, read_json_file
+from src import start_lock
 
 logger = Logger.get_logger(__name__)
 
@@ -153,7 +154,8 @@ def apply_region(config):
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
     ("-t N"), so reordering it would silently repoint them at the wrong task.
 
-    The app is also named `APP_TITLE` and its About links point at `APP_LINKS`, whichever region is selected.
+    The app is also named `APP_TITLE`, its About links point at `APP_LINKS`, and the other Start buttons are locked while a task runs, whichever region is
+    selected.
 
     Args:
         config: The app config dict from `src/config.py`, mutated in place.
@@ -162,6 +164,7 @@ def apply_region(config):
     # Only the buttons a language already shows are repointed. zh_CN has no FAQ entry of its own.
     for links in config.get("links", {}).values():
         links.update({key: url for key, url in APP_LINKS.items() if key in links})
+    start_lock.apply()
     config.setdefault("global_configs", []).append(region_option)
     registered = config["onetime_tasks"]
     cn_tasks = [entry for entry in registered if entry[0].startswith(CN_TASK_PREFIX)]

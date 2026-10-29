@@ -1366,6 +1366,76 @@ class TestRegionHiding(unittest.TestCase):
         self.assertFalse(self.region().already_hidden(Fresh))
 
 
+class TestStartLock(unittest.TestCase):
+    """A second Start while a task runs used to queue silently behind it, so the other Starts are greyed out instead."""
+
+    def start_lock(self):
+        return importlib.import_module('src.start_lock')
+
+    def card(self, task, tasks):
+        """A stand-in task card whose task can see every task in `tasks`."""
+        task.executor = types.SimpleNamespace(onetime_tasks=tasks)
+        return types.SimpleNamespace(onetime=True, task=task, start_button=mock.Mock())
+
+    def drawn(self, card):
+        """Run the wrapped `update_buttons` over `card` and return its Start button. Translation is left as a pass-through."""
+        original = mock.Mock()
+        with mock.patch.object(self.start_lock(), 'og', types.SimpleNamespace(app=types.SimpleNamespace(tr=lambda key: key))):
+            self.start_lock()._locking_update_buttons(original)(card, card.task)
+        original.assert_called_once_with(card, card.task)
+        return card.start_button
+
+    def test_another_running_task_locks_start(self):
+        idle, running = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=True, name='Global Daily')
+        button = self.drawn(self.card(idle, [idle, running]))
+        button.setEnabled.assert_called_once_with(False)
+        button.setToolTip.assert_called_once_with('Global Daily is running. Stop it first.')
+
+    def test_nothing_running_unlocks_start(self):
+        """Every card is redrawn when the running task stops, so this is what clears the lock."""
+        idle, other = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=False)
+        button = self.drawn(self.card(idle, [idle, other]))
+        button.setEnabled.assert_called_once_with(True)
+        button.setToolTip.assert_called_once_with('')
+
+    def test_a_card_whose_own_task_is_busy_is_left_alone(self):
+        """Its Start reads Resume while paused, and that has to stay clickable even with another task queued."""
+        paused, queued = types.SimpleNamespace(enabled=True), types.SimpleNamespace(enabled=True, name='Global Weekly')
+        self.drawn(self.card(paused, [paused, queued])).setEnabled.assert_not_called()
+
+    def test_a_trigger_card_is_left_alone(self):
+        """Trigger cards have an on/off switch rather than a Start button."""
+        card = types.SimpleNamespace(onetime=False, task=types.SimpleNamespace(enabled=False), start_button=mock.Mock())
+        self.assertEqual([], self.drawn(card).method_calls)
+
+    def test_the_framework_still_redraws_every_one_time_card(self):
+        """The lock rides on every one-time card redrawing when any task changes. If an ok-script upgrade narrows that, locks would go stale."""
+        import inspect
+
+        from ok.gui.tasks import TaskCard
+
+        self.assertIn('if task == self.task or self.onetime:', inspect.getsource(TaskCard))
+
+    def test_the_tooltip_is_translated_for_the_cn_client(self):
+        """The lock runs in both regions, so the Chinese catalog has to carry its tooltip too."""
+        import polib
+
+        catalog = polib.pofile('i18n/zh_CN/LC_MESSAGES/ok.po')
+        entry = catalog.find(self.start_lock().LOCKED_TEXT)
+        self.assertIsNotNone(entry, 'the zh_CN catalog has no entry for the locked Start tooltip')
+        self.assertIn('{task_name}', entry.msgstr)
+
+    def test_the_framework_card_is_wrapped_once(self):
+        """Region setup runs on every app start, so a second `apply` must not stack another wrapper."""
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        self.start_lock().apply()
+        wrapped = TaskCard.update_buttons
+        self.start_lock().apply()
+        self.assertIs(wrapped, TaskCard.update_buttons)
+        self.assertIn(self.start_lock().MARKER, TaskCard.__dict__)
+
+
 class TestRegionExtras(unittest.TestCase):
     """Upstream's own tabs and trigger tasks are for the CN client, so a Global install should not show them."""
 
