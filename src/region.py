@@ -17,6 +17,17 @@ APP_LINKS = {"github": "https://github.com/steve1316/ok-gf2-english", "faq": "ht
 # Set on a task class once its post_init has been wrapped, so re-importing this module cannot nest wrappers.
 HIDDEN_MARKER = "_ok_gf2_region_hidden"
 
+# Same guard for the framework's Diagnosis task, once it has been moved onto the Flow Checks page.
+CHECKS_MARKER = "_ok_gf2_flow_checks"
+
+# The sidebar page the single-flow tasks live on. They are run while fixing something, not every day, so on the main Tasks page they buried Global Daily and
+# Global Weekly. Grouping only changes where they are drawn - their `-t N` positions come from the registration order and do not move.
+CHECKS_GROUP = "Flow Checks"
+CHECKS_ICON = FluentIcon.DEVELOPER_TOOLS
+
+# The framework's own performance test. It is run while fixing something, like the single-flow tasks, and "Performance Test" did not say what it tests.
+DIAGNOSIS_TEXT = "Measures screen capture and OCR speed on this PC."
+
 REGION_CONFIG_NAME = "Region"
 REGION_CONFIG_KEY = "Game Client"
 REGION_GLOBAL = "Global"
@@ -73,7 +84,7 @@ def current_region(config_folder="configs"):
     return region if region in (REGION_GLOBAL, REGION_CN) else REGION_DEFAULT
 
 
-def already_hidden(task_class):
+def already_hidden(task_class, marker=HIDDEN_MARKER):
     """Whether this class has had its own `post_init` wrapped already.
 
     Looked up on the class itself rather than through its bases. Every task in `VerifyTasks` subclasses a composed task, so an inherited marker would report
@@ -81,50 +92,58 @@ def already_hidden(task_class):
 
     Args:
         task_class: The task class to check.
+        marker: The class attribute the wrap left behind. `HIDDEN_MARKER` unless the wrap made some other change.
 
     Returns:
         True when this class, not merely an ancestor, carries the marker.
     """
-    return HIDDEN_MARKER in task_class.__dict__
+    return marker in task_class.__dict__
 
 
-def _hiding_post_init(original):
-    """Wrap a task's `post_init` so the instance ends up hidden.
+def _set_after_post_init(module_path, class_name, marker, **attributes):
+    """Wrap a registered task's `post_init` so every instance ends up with `attributes` set.
+
+    The framework builds every registered task and only then reads attributes like `visible` and `group_name` off each instance. `BaseTask.__init__` sets
+    them all, so a class attribute would not survive, and `post_init` is the one hook that runs after it. Patching it from here keeps upstream's and the
+    framework's own files untouched, which matters because they get merged in regularly.
 
     Args:
-        original: The `post_init` being replaced.
-
-    Returns:
-        A replacement `post_init` that runs `original` and then hides the instance.
+        module_path: Module the task class is registered from.
+        class_name: The task class's name in that module.
+        marker: Class attribute set once wrapped, so re-importing this module cannot nest wrappers.
+        **attributes: Instance attributes to set after the original `post_init` runs.
     """
+    try:
+        task_class = getattr(importlib.import_module(module_path), class_name)
+    except (ImportError, AttributeError):
+        logger.warning(f'could not change {module_path}.{class_name}, it was registered but does not exist')
+        return
+    if already_hidden(task_class, marker):
+        return
+    original = task_class.post_init
 
     def post_init(self):
         original(self)
-        self.visible = False
+        for name, value in attributes.items():
+            setattr(self, name, value)
 
-    return post_init
+    task_class.post_init = post_init
+    setattr(task_class, marker, True)
+
+
+def _move_diagnosis_to_checks():
+    """Put the framework's Diagnosis task on the Flow Checks page, described by what it measures."""
+    _set_after_post_init("ok", "DiagnosisTask", CHECKS_MARKER, group_name=CHECKS_GROUP, group_icon=CHECKS_ICON, description=DIAGNOSIS_TEXT)
 
 
 def _hide_tasks(task_entries):
     """Keep the given task classes out of the sidebar.
 
-    The framework builds every registered task and then filters the sidebar on each instance's `visible` attribute, so hiding has to happen per instance,
-    after construction. A class attribute would not survive `BaseTask.__init__` setting `self.visible = True`, and `post_init` is the one hook that runs at
-    the right moment. Patching it from here keeps the CN task files untouched, which matters because they are upstream's and get merged in regularly.
-
     Args:
         task_entries: `[module_path, class_name]` pairs to hide.
     """
     for module_path, class_name in task_entries:
-        try:
-            task_class = getattr(importlib.import_module(module_path), class_name)
-        except (ImportError, AttributeError):
-            logger.warning(f'could not hide {module_path}.{class_name}, it was registered but does not exist')
-            continue
-        if already_hidden(task_class):
-            continue
-        task_class.post_init = _hiding_post_init(task_class.post_init)
-        setattr(task_class, HIDDEN_MARKER, True)
+        _set_after_post_init(module_path, class_name, HIDDEN_MARKER, visible=False)
 
 
 def apply_region(config):
@@ -151,6 +170,7 @@ def apply_region(config):
         _hide_tasks(GLOBAL_TASKS)
         return
     _hide_tasks(cn_tasks)
+    _move_diagnosis_to_checks()
     # Dropped outright rather than hidden. Neither list is indexed by "-t N", and a registered trigger task can still run in the background.
     config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
     config["trigger_tasks"] = [entry for entry in config.get("trigger_tasks", []) if not entry[0].startswith(CN_TASK_PREFIX)]

@@ -185,7 +185,7 @@ only ever run against the English client.
 | Water Flower Walk | Walk timing, nested under `Crew Deck` |
 | Water Flower | Switches the flower station on, nested under `Crew Deck`, off by default |
 | Claim Peak Value Rewards | Global Weekly setting |
-| Run: Go Home, Run: Start Loop, Run: Claim Free Packs, Run: Event Supply, Run: Claim Boundary Push, Run: Claim Peak Value, Run: Crew Deck | One task each, running a single flow |
+| Flow Checks | Sidebar page holding one task per flow, each named after that flow's setting |
 
 ## Do not translate
 

@@ -148,33 +148,30 @@ which sits directly below `Manage Flower` in the same list and would harvest the
 
 ---
 
-## The `Run: ` tasks
+## Flow Checks
 
-Each of these runs exactly **one** step and nothing else, which is how you check a single flow
-without sitting through the rest. They carry only the settings their own step reads - `Run: Event
-Supply` keeps `Event Banner Slots`, `Run: Crew Deck` keeps the walk timings, and the rest take no
-settings at all.
+These sit on the **Flow Checks** page in the sidebar, along with the framework's `Diagnosis` speed
+test. Each runs exactly **one** step and nothing else, which is how you check a single flow without
+sitting through the rest. Each is named after that step's switch in Global Daily or Global Weekly.
+They carry only the settings their own step reads - `Run Event Supply` keeps `Event Banner Slots`,
+`Crew Deck` keeps the walk timings, and the rest take no settings at all.
 
 | Task | Runs |
 |---|---|
-| `Run: Go Home` | Opens Commissions and returns home. Changes nothing |
-| `Run: Start Loop` | `Start Loop` |
-| `Run: Claim Free Packs` | `Claim Free Packs` |
-| `Run: Event Supply` | `Run Event Supply` |
-| `Run: Claim Boundary Push` | `Claim Boundary Push Rewards` |
-| `Run: Claim Peak Value` | `Claim Peak Value Rewards` |
-| `Run: Crew Deck` | `Crew Deck` - makes the drink, cooks the dish, waters the flower |
-| `Run: Buy Wishlist Items` | `Buy Wishlist Items` - spends in-game currency, never real money |
-| `Run: Boss Fight` | `Boss Fight` - spends the remaining attempts, and the Expenditure they cost |
+| `Start Loop` | Starts the in-game Loop and waits for it to finish |
+| `Claim Free Packs` | Claims the shop supply boxes that are currently free |
+| `Run Event Supply` | Auto-battles the last Supply stage of each running event |
+| `Claim Boundary Push Rewards` | Collects the Breakthrough rewards under Commissions |
+| `Claim Peak Value Rewards` | Collects the Peak Value Assessment rewards |
+| `Crew Deck` | Makes the drink, cooks the dish, waters the flower |
+| `Buy Wishlist Items` | Buys the shop Wishlist - spends in-game currency, never real money |
+| `Run Boss Fight` | Spends the remaining attempts, and the Expenditure they cost |
 
 The last two are the ones to be careful with. `Buy Wishlist Items` is off by default in Global Daily
-because it is the only flow that spends anything, but `Run: Buy Wishlist Items` always runs it - there
-is no toggle to leave off. `Run: Boss Fight` likewise spends every attempt it finds.
+because it is the only flow that spends anything, but the `Buy Wishlist Items` check always runs it -
+there is no toggle to leave off. `Run Boss Fight` likewise spends every attempt it finds.
 
-Start with **`Run: Go Home`**. It buys nothing, fights nothing and spends nothing - it only proves the
-bot can recognise the home screen and find its way back, which every other task depends on.
-
-Each Crew Deck activity is once a day, so `Run: Crew Deck` spends the drink, the dish and the day's
+Each Crew Deck activity is once a day, so the `Crew Deck` check spends the drink, the dish and the day's
 watering every time. A walk that stops short of its station reports that it found no prompt, which is
 what tells you a timing needs adjusting.
 

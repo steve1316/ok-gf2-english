@@ -153,6 +153,49 @@ class TestGlobalMain(TaskTestCase):
             self.assertTrue(self.task.pick_new_topic('Tea Time'))
         clicked.assert_not_called()
 
+    def built_tasks(self):
+        """Every registered task as the framework built it, keyed by class name.
+
+        Returns:
+            A dict of class name to task instance, from the live executor this harness set up.
+        """
+        from ok import og
+
+        return {type(task).__name__: task for task in og.executor.onetime_tasks}
+
+    def test_task_positions_did_not_move(self):
+        """Shortcuts and scheduled tasks run a task by its `-t N` position, so grouping and hiding must leave the order alone."""
+        names = list(self.built_tasks())
+        self.assertEqual(['DiagnosisTask', 'GlobalDailyTask', 'GlobalWeeklyTask', 'RunGoHome', 'RunStartLoop', 'RunShop', 'RunEventSupply',
+                          'RunBoundaryPush', 'RunPeakValue', 'RunCrewDeck', 'RunWishlist', 'RunBossFight'], names[names.index('DiagnosisTask'):])
+
+    def test_single_flow_tasks_sit_on_the_flow_checks_page_named_after_their_toggle(self):
+        """Named as the Daily and Weekly settings name the same flow, so one flow never goes by two names."""
+        region = importlib.import_module('src.region')
+        tasks = self.built_tasks()
+        for class_name in [name for _, name in region.GLOBAL_TASKS if name.startswith('Run')]:
+            task = tasks[class_name]
+            with self.subTest(class_name):
+                self.assertEqual(region.CHECKS_GROUP, task.group_name)
+                self.assertNotIn('Run: ', task.name)
+                self.assertTrue(task.description, f'{class_name} has no description')
+                self.assertIsNone(task.instructions, f"{class_name} would show Global Daily's first-run checklist")
+        self.assertEqual('Run Event Supply', tasks['RunEventSupply'].name)
+        self.assertEqual('Claim Peak Value Rewards', tasks['RunPeakValue'].name)
+
+    def test_go_home_is_hidden_but_still_registered(self):
+        """Removing it would shift every later `-t N`, and the MCP remote control still starts it by class name."""
+        self.assertFalse(self.built_tasks()['RunGoHome'].visible)
+
+    def test_diagnosis_moves_to_the_flow_checks_page(self):
+        region = importlib.import_module('src.region')
+        diagnosis = self.built_tasks()['DiagnosisTask']
+        self.assertEqual(region.CHECKS_GROUP, diagnosis.group_name)
+        self.assertEqual(region.DIAGNOSIS_TEXT, diagnosis.description)
+
+    def test_global_daily_offers_the_first_run_checklist(self):
+        self.assertIn('docs/en/global-tasks.md', self.task.instructions)
+
 
 class TestMenuLabelFilter(unittest.TestCase):
     """Guards the home-screen check against text that merely mentions the menu entries.
@@ -1340,9 +1383,18 @@ class TestRegionExtras(unittest.TestCase):
     def applied(self, region_name):
         region = importlib.import_module('src.region')
         config = self.config()
-        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_hide_tasks'):
+        # Every hide and move goes through `_set_after_post_init`, so patching it keeps the real task classes unwrapped.
+        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_set_after_post_init'):
             region.apply_region(config)
         return config
+
+    def test_diagnosis_moves_only_on_global(self):
+        """On CN the Flow Checks page does not exist, so Diagnosis stays where upstream put it."""
+        region = importlib.import_module('src.region')
+        for region_name, moves in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region, '_move_diagnosis_to_checks') as move:
+                self.applied(region_name)
+                self.assertEqual(moves, move.called)
 
     def test_global_drops_the_cn_tabs_and_trigger_tasks(self):
         config = self.applied('Global')

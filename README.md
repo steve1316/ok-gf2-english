@@ -52,7 +52,7 @@ all potential risks.**
    **[Releases](https://github.com/steve1316/ok-gf2-english/releases)**. Do not download the `Source Code` archives - they leave out the
    packaged dependencies.
 2. **Install and run**: Run the installer, then launch `ok-gf2`. The app updates itself from then on.
-3. **Configure tasks**: Set task options in the app. Start with `Run: Go Home`, which changes nothing.
+3. **Configure tasks**: Set task options in the app. The **Instructions** button on Global Daily lists what a first run needs.
 
 ## Runtime Requirements & Recommendations
 
@@ -90,21 +90,21 @@ flag (see [Command-line arguments](#command-line-arguments)).
 |---|---|---|
 | 7 | **[Global Daily](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md)** | Starts the in-game Loop, then picks up what Loop does not cover |
 | 8 | **[Global Weekly](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md)** | Collects the Peak Value Assessment rewards |
-| 9 | Run: Go Home | Recognises the home screen, leaves it and comes back. Changes nothing |
-| 10 | Run: Start Loop | Runs only the Start Loop step |
-| 11 | Run: Claim Free Packs | Runs only the free shop pack step |
-| 12 | Run: Event Supply | Runs only the event Supply step |
-| 13 | Run: Claim Boundary Push | Runs only the Boundary Push collection |
-| 14 | Run: Claim Peak Value | Runs only the Peak Value collection |
-| 15 | Run: Crew Deck | Runs only the Crew Deck activities |
-| 16 | Run: Buy Wishlist Items | Runs only the shop Wishlist purchase. Spends in-game currency |
-| 17 | Run: Boss Fight | Runs only the Boss Fight step. Spends Expenditure |
+| 9 | Go Home | Hidden. Kept only so the numbers after it do not move |
+| 10 | Start Loop | Runs only the Start Loop step |
+| 11 | Claim Free Packs | Runs only the free shop pack step |
+| 12 | Run Event Supply | Runs only the event Supply step |
+| 13 | Claim Boundary Push Rewards | Runs only the Boundary Push collection |
+| 14 | Claim Peak Value Rewards | Runs only the Peak Value collection |
+| 15 | Crew Deck | Runs only the Crew Deck activities |
+| 16 | Buy Wishlist Items | Runs only the shop Wishlist purchase. Spends in-game currency |
+| 17 | Run Boss Fight | Runs only the Boss Fight step. Spends Expenditure |
 
 The numbering starts at 7 because positions 1-6 belong to upstream's CN tasks, which still ship and
 are hidden unless **Region** is set to `CN`. They are documented in
 [upstream's repository](https://github.com/AliceJump/ok-gf2).
 
-The `Run: ` tasks each run a single step of Global Daily or Global Weekly, for checking one flow at a
+Tasks 10-17 sit on the **Flow Checks** page in the sidebar. Each runs a single step of Global Daily or Global Weekly, for checking one flow at a
 time - see
 **[docs/en/global-tasks.md](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md)**.
 
@@ -279,7 +279,7 @@ task code matches against, so never put UI strings there.
 | [API Reference (API.md)](https://github.com/steve1316/ok-gf2-english/blob/master/docs/dev/API.md) | Detailed API docs for BaseGfTask, Mixin, ScreenPosition, and more |
 | [i18n & OCR Configuration](https://github.com/steve1316/ok-gf2-english/blob/master/docs/dev/i18n_OCR配置流程.md) | Runtime locale, language JSON, OCR matching, and text-fix workflow |
 | [Keyboard System](https://github.com/steve1316/ok-gf2-english/blob/master/docs/dev/键盘操作体系.md) | Hotkey mapping, key binding conventions |
-| [Global Client Tasks](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md) | The Global task set, the `Run: ` verification tasks, and what is not covered yet |
+| [Global Client Tasks](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md) | The Global task set, the Flow Checks, and what is not covered yet |
 | [Terminology Glossary](https://github.com/steve1316/ok-gf2-english/blob/master/docs/glossary.md) | Chinese to Global / Steam English term mapping, for anyone translating this project |
 
 Note that the developer docs above are still written in Chinese. Only the user-facing guides in
