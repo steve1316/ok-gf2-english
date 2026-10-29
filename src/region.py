@@ -7,6 +7,13 @@ from ok.util.file import get_relative_path, read_json_file
 
 logger = Logger.get_logger(__name__)
 
+# Window title, About tab name, and exported log zip name. Set here rather than in upstream's `src/config.py` so the rename never conflicts on a merge.
+APP_TITLE = "ok-gf2-english"
+
+# The About tab's GitHub and FAQ buttons. Upstream's point at their CN repo, where questions about this fork do not belong. Discord, sponsor and QQ links
+# are the upstream author's own community, so they are left alone.
+APP_LINKS = {"github": "https://github.com/steve1316/ok-gf2-english", "faq": "https://github.com/steve1316/ok-gf2-english#-troubleshooting"}
+
 # Set on a task class once its post_init has been wrapped, so re-importing this module cannot nest wrappers.
 HIDDEN_MARKER = "_ok_gf2_region_hidden"
 
@@ -127,9 +134,15 @@ def apply_region(config):
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
     ("-t N"), so reordering it would silently repoint them at the wrong task.
 
+    The app is also named `APP_TITLE` and its About links point at `APP_LINKS`, whichever region is selected.
+
     Args:
         config: The app config dict from `src/config.py`, mutated in place.
     """
+    config["gui_title"] = APP_TITLE
+    # Only the buttons a language already shows are repointed. zh_CN has no FAQ entry of its own.
+    for links in config.get("links", {}).values():
+        links.update({key: url for key, url in APP_LINKS.items() if key in links})
     config.setdefault("global_configs", []).append(region_option)
     registered = config["onetime_tasks"]
     cn_tasks = [entry for entry in registered if entry[0].startswith(CN_TASK_PREFIX)]

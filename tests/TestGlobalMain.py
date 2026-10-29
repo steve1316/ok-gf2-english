@@ -1331,6 +1331,10 @@ class TestRegionExtras(unittest.TestCase):
             'onetime_tasks': [['src.tasks.DailyTask', 'DailyTask']],
             'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
             'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
+            'links': {
+                'default': {'github': 'https://github.com/alicejump/ok-gf2', 'faq': 'https://github.com/alicejump/ok-gf2', 'discord': 'https://discord.gg/x'},
+                'zh_CN': {'github': 'https://github.com/alicejump/ok-gf2'},
+            },
         }
 
     def applied(self, region_name):
@@ -1349,6 +1353,21 @@ class TestRegionExtras(unittest.TestCase):
         config, expected = self.applied('CN'), self.config()
         self.assertEqual(expected['custom_tabs'], config['custom_tabs'])
         self.assertEqual(expected['trigger_tasks'], config['trigger_tasks'])
+
+    def test_the_about_links_point_at_the_fork_in_either_region(self):
+        """Upstream's community links stay, and a language without a FAQ button does not gain one."""
+        fork = 'https://github.com/steve1316/ok-gf2-english'
+        for region_name in ('Global', 'CN'):
+            links = self.applied(region_name)['links']
+            with self.subTest(region_name):
+                self.assertEqual(fork, links['default']['github'])
+                self.assertTrue(links['default']['faq'].startswith(fork))
+                self.assertEqual('https://discord.gg/x', links['default']['discord'])
+                self.assertEqual({'github': fork}, links['zh_CN'])
+
+    def test_the_app_is_named_after_the_fork_in_either_region(self):
+        for region_name in ('Global', 'CN'):
+            self.assertEqual('ok-gf2-english', self.applied(region_name)['gui_title'])
 
 
 class TestSwipeRecovery(unittest.TestCase):
