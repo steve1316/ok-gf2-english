@@ -153,6 +153,49 @@ class TestGlobalMain(TaskTestCase):
             self.assertTrue(self.task.pick_new_topic('Tea Time'))
         clicked.assert_not_called()
 
+    def built_tasks(self):
+        """Every registered task as the framework built it, keyed by class name.
+
+        Returns:
+            A dict of class name to task instance, from the live executor this harness set up.
+        """
+        from ok import og
+
+        return {type(task).__name__: task for task in og.executor.onetime_tasks}
+
+    def test_task_positions_did_not_move(self):
+        """Shortcuts and scheduled tasks run a task by its `-t N` position, so grouping and hiding must leave the order alone."""
+        names = list(self.built_tasks())
+        self.assertEqual(['DiagnosisTask', 'GlobalDailyTask', 'GlobalWeeklyTask', 'RunGoHome', 'RunStartLoop', 'RunShop', 'RunEventSupply',
+                          'RunBoundaryPush', 'RunPeakValue', 'RunCrewDeck', 'RunWishlist', 'RunBossFight'], names[names.index('DiagnosisTask'):])
+
+    def test_single_flow_tasks_sit_on_the_flow_checks_page_named_after_their_toggle(self):
+        """Named as the Daily and Weekly settings name the same flow, so one flow never goes by two names."""
+        region = importlib.import_module('src.region')
+        tasks = self.built_tasks()
+        for class_name in [name for _, name in region.GLOBAL_TASKS if name.startswith('Run')]:
+            task = tasks[class_name]
+            with self.subTest(class_name):
+                self.assertEqual(region.CHECKS_GROUP, task.group_name)
+                self.assertNotIn('Run: ', task.name)
+                self.assertTrue(task.description, f'{class_name} has no description')
+                self.assertIsNone(task.instructions, f"{class_name} would show Global Daily's first-run checklist")
+        self.assertEqual('Run Event Supply', tasks['RunEventSupply'].name)
+        self.assertEqual('Claim Peak Value Rewards', tasks['RunPeakValue'].name)
+
+    def test_go_home_is_hidden_but_still_registered(self):
+        """Removing it would shift every later `-t N`, and the MCP remote control still starts it by class name."""
+        self.assertFalse(self.built_tasks()['RunGoHome'].visible)
+
+    def test_diagnosis_moves_to_the_flow_checks_page(self):
+        region = importlib.import_module('src.region')
+        diagnosis = self.built_tasks()['DiagnosisTask']
+        self.assertEqual(region.CHECKS_GROUP, diagnosis.group_name)
+        self.assertEqual(region.DIAGNOSIS_TEXT, diagnosis.description)
+
+    def test_global_daily_offers_the_first_run_checklist(self):
+        self.assertIn('docs/en/global-tasks.md', self.task.instructions)
+
 
 class TestMenuLabelFilter(unittest.TestCase):
     """Guards the home-screen check against text that merely mentions the menu entries.
@@ -1323,6 +1366,76 @@ class TestRegionHiding(unittest.TestCase):
         self.assertFalse(self.region().already_hidden(Fresh))
 
 
+class TestStartLock(unittest.TestCase):
+    """A second Start while a task runs used to queue silently behind it, so the other Starts are greyed out instead."""
+
+    def start_lock(self):
+        return importlib.import_module('src.start_lock')
+
+    def card(self, task, tasks):
+        """A stand-in task card whose task can see every task in `tasks`."""
+        task.executor = types.SimpleNamespace(onetime_tasks=tasks)
+        return types.SimpleNamespace(onetime=True, task=task, start_button=mock.Mock())
+
+    def drawn(self, card):
+        """Run the wrapped `update_buttons` over `card` and return its Start button. Translation is left as a pass-through."""
+        original = mock.Mock()
+        with mock.patch.object(self.start_lock(), 'og', types.SimpleNamespace(app=types.SimpleNamespace(tr=lambda key: key))):
+            self.start_lock()._locking_update_buttons(original)(card, card.task)
+        original.assert_called_once_with(card, card.task)
+        return card.start_button
+
+    def test_another_running_task_locks_start(self):
+        idle, running = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=True, name='Global Daily')
+        button = self.drawn(self.card(idle, [idle, running]))
+        button.setEnabled.assert_called_once_with(False)
+        button.setToolTip.assert_called_once_with('Global Daily is running. Stop it first.')
+
+    def test_nothing_running_unlocks_start(self):
+        """Every card is redrawn when the running task stops, so this is what clears the lock."""
+        idle, other = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=False)
+        button = self.drawn(self.card(idle, [idle, other]))
+        button.setEnabled.assert_called_once_with(True)
+        button.setToolTip.assert_called_once_with('')
+
+    def test_a_card_whose_own_task_is_busy_is_left_alone(self):
+        """Its Start reads Resume while paused, and that has to stay clickable even with another task queued."""
+        paused, queued = types.SimpleNamespace(enabled=True), types.SimpleNamespace(enabled=True, name='Global Weekly')
+        self.drawn(self.card(paused, [paused, queued])).setEnabled.assert_not_called()
+
+    def test_a_trigger_card_is_left_alone(self):
+        """Trigger cards have an on/off switch rather than a Start button."""
+        card = types.SimpleNamespace(onetime=False, task=types.SimpleNamespace(enabled=False), start_button=mock.Mock())
+        self.assertEqual([], self.drawn(card).method_calls)
+
+    def test_the_framework_still_redraws_every_one_time_card(self):
+        """The lock rides on every one-time card redrawing when any task changes. If an ok-script upgrade narrows that, locks would go stale."""
+        import inspect
+
+        from ok.gui.tasks import TaskCard
+
+        self.assertIn('if task == self.task or self.onetime:', inspect.getsource(TaskCard))
+
+    def test_the_tooltip_is_translated_for_the_cn_client(self):
+        """The lock runs in both regions, so the Chinese catalog has to carry its tooltip too."""
+        import polib
+
+        catalog = polib.pofile('i18n/zh_CN/LC_MESSAGES/ok.po')
+        entry = catalog.find(self.start_lock().LOCKED_TEXT)
+        self.assertIsNotNone(entry, 'the zh_CN catalog has no entry for the locked Start tooltip')
+        self.assertIn('{task_name}', entry.msgstr)
+
+    def test_the_framework_card_is_wrapped_once(self):
+        """Region setup runs on every app start, so a second `apply` must not stack another wrapper."""
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        self.start_lock().apply()
+        wrapped = TaskCard.update_buttons
+        self.start_lock().apply()
+        self.assertIs(wrapped, TaskCard.update_buttons)
+        self.assertIn(self.start_lock().MARKER, TaskCard.__dict__)
+
+
 class TestRegionExtras(unittest.TestCase):
     """Upstream's own tabs and trigger tasks are for the CN client, so a Global install should not show them."""
 
@@ -1331,14 +1444,27 @@ class TestRegionExtras(unittest.TestCase):
             'onetime_tasks': [['src.tasks.DailyTask', 'DailyTask']],
             'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
             'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
+            'links': {
+                'default': {'github': 'https://github.com/alicejump/ok-gf2', 'faq': 'https://github.com/alicejump/ok-gf2', 'discord': 'https://discord.gg/x'},
+                'zh_CN': {'github': 'https://github.com/alicejump/ok-gf2'},
+            },
         }
 
     def applied(self, region_name):
         region = importlib.import_module('src.region')
         config = self.config()
-        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_hide_tasks'):
+        # Every hide and move goes through `_set_after_post_init`, so patching it keeps the real task classes unwrapped.
+        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_set_after_post_init'):
             region.apply_region(config)
         return config
+
+    def test_diagnosis_moves_only_on_global(self):
+        """On CN the Flow Checks page does not exist, so Diagnosis stays where upstream put it."""
+        region = importlib.import_module('src.region')
+        for region_name, moves in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region, '_move_diagnosis_to_checks') as move:
+                self.applied(region_name)
+                self.assertEqual(moves, move.called)
 
     def test_global_drops_the_cn_tabs_and_trigger_tasks(self):
         config = self.applied('Global')
@@ -1349,6 +1475,21 @@ class TestRegionExtras(unittest.TestCase):
         config, expected = self.applied('CN'), self.config()
         self.assertEqual(expected['custom_tabs'], config['custom_tabs'])
         self.assertEqual(expected['trigger_tasks'], config['trigger_tasks'])
+
+    def test_the_about_links_point_at_the_fork_in_either_region(self):
+        """Upstream's community links stay, and a language without a FAQ button does not gain one."""
+        fork = 'https://github.com/steve1316/ok-gf2-english'
+        for region_name in ('Global', 'CN'):
+            links = self.applied(region_name)['links']
+            with self.subTest(region_name):
+                self.assertEqual(fork, links['default']['github'])
+                self.assertTrue(links['default']['faq'].startswith(fork))
+                self.assertEqual('https://discord.gg/x', links['default']['discord'])
+                self.assertEqual({'github': fork}, links['zh_CN'])
+
+    def test_the_app_is_named_after_the_fork_in_either_region(self):
+        for region_name in ('Global', 'CN'):
+            self.assertEqual('ok-gf2-english', self.applied(region_name)['gui_title'])
 
 
 class TestSwipeRecovery(unittest.TestCase):

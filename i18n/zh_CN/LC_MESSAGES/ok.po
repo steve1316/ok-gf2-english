@@ -684,3 +684,6 @@ msgstr "本机桌面"
 
 msgid "自动"
 msgstr "自动"
+
+msgid "{task_name} is running. Stop it first."
+msgstr "{task_name} 正在运行，请先停止它。"

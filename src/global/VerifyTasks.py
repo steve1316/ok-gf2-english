@@ -5,6 +5,8 @@ task here runs exactly one, with no toggles to set - clicking it does that flow 
 copy of any navigation to drift out of sync.
 """
 
+from src.region import CHECKS_GROUP, CHECKS_ICON
+
 from .BaseGlobalTask import COMMISSIONS, START_RECHECK, START_TIME_OUT
 from .GlobalDailyTask import FLOWS as DAILY_FLOWS
 from .GlobalDailyTask import GlobalDailyTask
@@ -37,13 +39,14 @@ def _strip_flow_toggles(task, flows):
 class _SingleFlow:
     """Shared behaviour for a task that runs exactly one flow.
 
-    Mixed in ahead of the composed task it borrows the flow from, so `super()` in `__init__` still reaches that task. Subclasses set `flow` and `label`, and
-    `FLOWS` names the table the composed task registered, so its toggles can be taken back off again.
+    Mixed in ahead of the composed task it borrows the flow from, so `super()` in `__init__` still reaches that task. Subclasses set `flow` and `summary`, and
+    `FLOWS` names the table the composed task registered, so its toggles can be taken back off again. The task is named after its flow's toggle in that table,
+    so it reads the same on the Flow Checks page as it does in the Daily and Weekly settings.
     """
 
     FLOWS = ()
     flow = None
-    label = None
+    summary = None
 
     def __init__(self, *args, **kwargs):
         """Build the task, then strip the settings that belong to the flows it will not run.
@@ -54,8 +57,12 @@ class _SingleFlow:
         """
         super().__init__(*args, **kwargs)
         _strip_flow_toggles(self, self.FLOWS)
-        self.name = f'Run: {self.label}'
-        self.description = f'Runs only {self.label}, for checking that one flow on its own.'
+        self.name = next((key for key, method, _ in self.FLOWS if method == self.flow), None)
+        self.description = self.summary
+        self.group_name = CHECKS_GROUP
+        self.group_icon = CHECKS_ICON
+        # Global Daily's first-run checklist is about the whole run, not one flow.
+        self.instructions = None
         self.support_schedule_task = False
 
     def run(self):
@@ -68,7 +75,7 @@ class _SingleFlow:
         getattr(self, self.flow)()
         # A flow that stopped early may have parked on a screen for a flow behind it, and here there is none.
         self.leave_parked_screen()
-        self.log_info(f'{self.label} finished.', notify=True)
+        self.log_info(f'{self.name} finished.', notify=True)
 
 
 class _SingleDailyFlow(_SingleFlow, GlobalDailyTask):
@@ -91,17 +98,22 @@ class RunGoHome(_SingleDailyFlow):
     """
 
     flow = 'go_home'
-    label = 'Go Home'
+    summary = 'Opens Commissions and returns home, to check screen detection and the way back. Changes nothing.'
 
     def __init__(self, *args, **kwargs):
-        """Build the task, then replace the generic single-flow description with one that says this changes nothing.
+        """Build the task, then keep it out of the sidebar.
+
+        Still registered rather than removed, because removing it would shift the `-t N` position of every task after it. The MCP remote control also
+        starts it by class name as its safe idle task, which works whether or not it is visible.
 
         Args:
             *args: Passed to the composed task.
             **kwargs: Passed to the composed task.
         """
         super().__init__(*args, **kwargs)
-        self.description = 'Opens Commissions and returns home, to check screen detection and the way back. Changes nothing - run this first.'
+        # Global Daily has no toggle for this flow to be named after.
+        self.name = 'Go Home'
+        self.visible = False
 
     def run(self):
         """Recognise the home screen, leave it for a read-only list, and come back."""
@@ -121,35 +133,35 @@ class RunStartLoop(_SingleDailyFlow):
     """Opens the Dispatch Room and starts the in-game Loop."""
 
     flow = 'start_loop'
-    label = 'Start Loop'
+    summary = 'Starts the in-game Loop in the Dispatch Room and waits for it to finish.'
 
 
 class RunShop(_SingleDailyFlow):
     """Claims the shop supply boxes that are currently free."""
 
     flow = 'shopping'
-    label = 'Claim Free Packs'
+    summary = 'Claims the shop supply boxes that are currently free.'
 
 
 class RunWishlist(_SingleDailyFlow):
     """Buys everything waiting in the shop Wishlist. Spends in-game currency, so it acts on its own account rather than only reporting."""
 
     flow = 'buy_wishlist'
-    label = 'Buy Wishlist Items'
+    summary = 'Buys everything on the shop Wishlist.'
 
 
 class RunEventSupply(_SingleDailyFlow):
     """Auto-battles the last Supply stage of the current event. Spends Expenditure."""
 
     flow = 'run_event_supply'
-    label = 'Event Supply'
+    summary = 'Auto-battles the last Supply stage of each running event.'
 
 
 class RunBoundaryPush(_SingleDailyFlow):
     """Collects the Breakthrough rewards under Regular Commissions."""
 
     flow = 'claim_boundary_push'
-    label = 'Claim Boundary Push'
+    summary = 'Collects the Breakthrough rewards under Commissions.'
 
 
 class RunCrewDeck(_SingleDailyFlow):
@@ -159,18 +171,18 @@ class RunCrewDeck(_SingleDailyFlow):
     """
 
     flow = 'crew_deck'
-    label = 'Crew Deck'
+    summary = 'Makes the drink, cooks the dish, and waters the flower if that is switched on.'
 
 
 class RunBossFight(_SingleWeeklyFlow):
     """Spends the remaining Boss Fight attempts through the game's own Auto Mode. Costs Expenditure."""
 
     flow = 'boss_fight'
-    label = 'Boss Fight'
+    summary = 'Uses the remaining Boss Fight attempts through Auto Mode.'
 
 
 class RunPeakValue(_SingleWeeklyFlow):
     """Collects the Peak Value Assessment rewards."""
 
     flow = 'claim_peak_value'
-    label = 'Claim Peak Value'
+    summary = 'Collects the Peak Value Assessment rewards.'

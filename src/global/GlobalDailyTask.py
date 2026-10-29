@@ -102,6 +102,19 @@ FLOWS = (
 # someone's behalf.
 FLOWS_OFF_BY_DEFAULT = ('Buy Wishlist Items',)
 
+# Shown behind the Instructions button on Global Daily. These are the requirements a first run most often trips over, taken from the README, with the full
+# guide linked for everything else. The framework turns the bare URL into a link.
+INSTRUCTIONS = (
+    'Before the first run:\n'
+    '1. Use a 16:9 game resolution, at least 1280x720.\n'
+    '2. Turn off Windows Auto HDR.\n'
+    '3. Use a dark home screen background. A white one breaks text recognition.\n'
+    '4. Run this app as Administrator.\n'
+    '\n'
+    'Every step, what it spends, and how to tune the Crew Deck walks:\n'
+    'https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md'
+)
+
 # In-game Loop automation. The client runs the dailies itself once this is started, which is why the
 # Global task set is so much smaller than the CN one.
 #
@@ -667,14 +680,15 @@ class GlobalDailyTask(BaseGlobalTask):
         """
         super().__init__(*args, **kwargs)
         self.name = 'Global Daily'
-        self.description = 'Starts the in-game Loop, claims free shop packs, and collects Boundary Push rewards.'
+        self.description = 'Crew Deck, free packs, Event Supply and Boundary Push, then starts the in-game Loop.'
+        self.instructions = INSTRUCTIONS
         self.support_schedule_task = True
         self.register_flows(FLOWS)
         self.default_config.update({key: default for key, default, _ in WALK_OPTIONS + STATION_TOGGLES})
         self.config_description.update({key: description for key, _, description in WALK_OPTIONS + STATION_TOGGLES})
         self.default_config[BANNER_SLOTS] = BANNER_SLOTS_DEFAULT
         self.config_description[BANNER_SLOTS] = BANNER_SLOTS_TEXT
-        # Group each setting under the flow that reads it. On the Global tasks that is what keeps a `Run:`
+        # Group each setting under the flow that reads it. On the Global tasks that is what keeps a single-flow
         # task down to its own flow's settings. It does not hide anything on the daily itself - that would
         # need the framework's `config_type` sub-configs, which no Global task sets up.
         self.default_config_group.update({
