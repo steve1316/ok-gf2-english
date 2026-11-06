@@ -13,12 +13,13 @@ import pywintypes
 from unittest import mock
 
 from ok import Box, find_boxes_by_name, relative_box
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import QWidget
 from ok.task.task import OCR, BaseTask, ExecutorOperation
 from ok.ui.qt.common.config import Language
 from ok.ui.qt.kit.dialogs import Dialog
+from ok.ui.qt.kit.icons import load_icon
 from ok.ui.qt.kit.theme import Theme, contrast_ratio, theme
 from ok.test.TaskTestCase import TaskTestCase
 from src.config import config
@@ -27,6 +28,20 @@ from src.config import config
 # resolved the same way the framework resolves it - by name, through importlib.
 GlobalDailyTask = importlib.import_module('src.global.GlobalDailyTask').GlobalDailyTask
 BaseGlobalTask = importlib.import_module('src.global.BaseGlobalTask').BaseGlobalTask
+
+
+def opaque_colours(pixmap):
+    """The fully opaque colours in a drawn icon.
+
+    Args:
+        pixmap: The drawn icon.
+
+    Returns:
+        A set of lowercase `#rrggbb` names.
+    """
+    image = pixmap.toImage()
+    pixels = (image.pixelColor(x, y) for x in range(image.width()) for y in range(image.height()))
+    return {pixel.name() for pixel in pixels if pixel.alpha() == 255}
 
 
 def region_selected(region_name):
@@ -213,6 +228,79 @@ class TestGlobalMain(TaskTestCase):
         self.assertEqual(region.CHECKS_GROUP, diagnosis.group_name)
         self.assertEqual(region.DIAGNOSIS_TEXT, diagnosis.description)
 
+    def tasks_page(self, saved_filter='all'):
+        """The real Tasks page over the real tasks, with `saved_filter` as the tab remembered from last time and nothing touching `configs/`.
+
+        Args:
+            saved_filter: The tab key the page should find saved.
+
+        Returns:
+            The built `TasksPage`.
+        """
+        tasks_page = importlib.import_module('ok.ui.qt.tasks.tasks_page')
+        with mock.patch.object(tasks_page, 'Config', lambda *_: {'filter': saved_filter}):
+            page = tasks_page.TasksPage()
+        self.addCleanup(page.deleteLater)
+        return page
+
+    def test_tasks_page_opens_on_global_checks_whatever_was_open_last(self):
+        """Global Daily and Weekly are what the app is opened for, so a tab left open last time should not hide them."""
+        region = importlib.import_module('src.region')
+        for saved in ('all', 'group:Flow Checks'):
+            with self.subTest(saved):
+                page = self.tasks_page(saved)
+                self.assertEqual(f'group:{region.GLOBAL_CHECKS_GROUP}', page.current_filter())
+                self.assertEqual(['Global Daily', 'Global Weekly'], [row.task.name for row in page.onetime_section.rows if not row.isHidden()])
+                self.assertEqual('Global Daily', page.selected_task.name)
+
+    def test_tasks_page_lists_global_checks_before_flow_checks(self):
+        """Diagnosis registers first, so left alone the tab of tasks run while fixing something would come first."""
+        region = importlib.import_module('src.region')
+        self.assertEqual(['all', f'group:{region.GLOBAL_CHECKS_GROUP}', f'group:{region.CHECKS_GROUP}'], self.tasks_page().filter_tabs.keys())
+
+    def test_tab_picked_this_session_survives_a_task_list_refresh(self):
+        """Opening on Global Checks is for a fresh start only. The page rebuilds its tabs whenever the task list changes."""
+        page = self.tasks_page()
+        page.set_filter('all')
+        page.refresh_tasks()
+        self.assertEqual('all', page.current_filter())
+
+    def test_every_visible_task_has_its_own_icon(self):
+        """Without one a row falls back to a two-letter monogram."""
+        drawn = {}
+        for name, task in self.built_tasks().items():
+            if task.visible:
+                with self.subTest(name):
+                    self.assertIsInstance(task.icon, QIcon)
+                    drawn[bytes(task.icon.pixmap(QSize(32, 32)).toImage().constBits())] = name
+        self.assertEqual(11, len(drawn), f'two tasks share an icon: {drawn.values()}')
+
+    def test_task_icons_draw_their_key_colour_and_the_themes_ink_in_both_themes(self):
+        """The whole reason for the custom engine: the framework's own tint would flatten these to one colour."""
+        task_icons = importlib.import_module('src.task_icons')
+        self.addCleanup(theme.set_theme, theme.mode)
+        for key in (task_icons.ORANGE, task_icons.TEAL):
+            icon = task_icons.two_tone('daily', key)
+            for mode in (Theme.DARK, Theme.LIGHT):
+                with self.subTest(mode=mode, key=key):
+                    theme.set_theme(mode)
+                    colours = opaque_colours(icon.pixmap(QSize(64, 64)))
+                    self.assertIn(key[theme.is_dark()].lower(), colours)
+                    self.assertIn(theme.color('text').name(), colours)
+
+    def test_every_shipped_icon_is_used_and_loads_as_plain_paths(self):
+        """Qt's SVG Tiny renderer drops CSS, filters and text without complaint, so they would only show up as a blank row."""
+        task_icons = importlib.import_module('src.task_icons')
+        shipped = sorted(task_icons.ICON_DIR.glob('*.svg'))
+        self.assertEqual(14, len(shipped))
+        for path in shipped:
+            with self.subTest(path.name):
+                markup = path.read_text(encoding='ascii')
+                self.assertFalse(load_icon(str(path)).isNull())
+                self.assertEqual(set(), set(re.findall(r'<(\w+)', markup)) - {'svg', 'path'})
+                self.assertIn(task_icons.KEY_PLACEHOLDER, markup)
+                self.assertIn(task_icons.INK_PLACEHOLDER, markup)
+
     def test_links_are_readable_on_the_dialog_they_are_shown_in(self):
         """With no Link colour the palette kept Windows' own, a dark shade of the accent that read at 1.4:1 on the dark theme."""
         self.addCleanup(theme.set_accent, theme.accent())
@@ -232,6 +320,11 @@ class TestGlobalMain(TaskTestCase):
                     self.addCleanup(dialog.deleteLater)
                     link = dialog.message_label.palette().color(QPalette.ColorRole.Link)
                     self.assertGreaterEqual(contrast_ratio(link, theme.color('surface')), 4.5, link.name())
+
+    def test_global_checks_holds_only_global_daily_and_weekly(self):
+        region = importlib.import_module('src.region')
+        grouped = [name for name, task in self.built_tasks().items() if task.group_name == region.GLOBAL_CHECKS_GROUP]
+        self.assertEqual(['GlobalDailyTask', 'GlobalWeeklyTask'], grouped)
 
     def test_global_daily_offers_the_first_run_checklist(self):
         self.assertIn('docs/en/global-tasks.md', self.task.instructions)
@@ -1561,6 +1654,25 @@ class TestRegionExtras(unittest.TestCase):
         for region_name in ('Global', 'CN'):
             with self.subTest(region_name):
                 self.assertEqual(['GfInteraction'], self.applied(region_name)['windows']['interaction'])
+
+    def test_all_tab_icon_is_only_set_on_global(self):
+        """CN keeps the framework's own tabs, as its tasks are upstream's."""
+        self.assertIn('all', self.applied('Global')['task_category_icons'])
+        self.assertNotIn('task_category_icons', self.applied('CN'))
+
+    def test_no_category_colours_are_set(self):
+        """The framework would tint any icon whose category has a colour down to one colour, which undoes the two-tone icons."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertNotIn('task_category_colors', self.applied(region_name))
+
+    def test_tab_changes_only_apply_on_global(self):
+        """CN has no Global Checks tab to open on."""
+        region = importlib.import_module('src.region')
+        for region_name, applies in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region.task_tabs, 'apply') as apply:
+                self.applied(region_name)
+                self.assertEqual(applies, apply.called)
 
     def test_upstreams_tabs_are_dropped_in_either_region(self):
         """Both are built on `ok.gui` and qfluentwidgets, which ok-script 3 removed, so registering either crashes the app at startup."""

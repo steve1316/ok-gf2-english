@@ -2,7 +2,8 @@ import importlib
 
 from ok import ConfigOption, Logger
 from ok.util.file import get_relative_path, read_json_file
-from src import link_colour, start_lock
+from src import link_colour, start_lock, task_tabs
+from src.task_icons import ORANGE, TEAL, two_tone
 
 logger = Logger.get_logger(__name__)
 
@@ -29,7 +30,14 @@ CHECKS_MARKER = "_ok_gf2_flow_checks"
 # The Tasks page filter tab the single-flow tasks live on. They are run while fixing something, not every day, so they should not bury Global Daily and Global
 # Weekly. Grouping only changes where they are drawn - their `-t N` positions come from the registration order and do not move.
 CHECKS_GROUP = "Flow Checks"
-CHECKS_ICON = "bug"
+CHECKS_ICON = two_tone("category-checks", TEAL)
+
+# The tab the Tasks page opens on. Global Daily and Global Weekly are what the app is opened for, so they get a tab to themselves.
+GLOBAL_CHECKS_GROUP = "Global Checks"
+GLOBAL_CHECKS_ICON = two_tone("global-checks", ORANGE)
+
+# The All tab takes its icon from the app config. Group tabs and task rows carry their own.
+ALL_TAB_ICON = two_tone("category-all", ORANGE)
 
 # The framework's own performance test. It is run while fixing something, like the single-flow tasks, and "Performance Test" did not say what it tests.
 DIAGNOSIS_TEXT = "Measures screen capture and OCR speed on this PC."
@@ -143,7 +151,7 @@ def _set_after_post_init(module_path, class_name, marker, **attributes):
 
 def _move_diagnosis_to_checks():
     """Put the framework's Diagnosis task on the Flow Checks page, described by what it measures."""
-    _set_after_post_init("ok", "DiagnosisTask", CHECKS_MARKER, group_name=CHECKS_GROUP, group_icon=CHECKS_ICON, description=DIAGNOSIS_TEXT)
+    _set_after_post_init("ok", "DiagnosisTask", CHECKS_MARKER, group_name=CHECKS_GROUP, group_icon=CHECKS_ICON, icon=two_tone("diagnosis", TEAL), description=DIAGNOSIS_TEXT)
 
 
 def _hide_tasks(task_entries):
@@ -191,5 +199,7 @@ def apply_region(config):
         return
     _hide_tasks(cn_tasks)
     _move_diagnosis_to_checks()
+    task_tabs.apply(GLOBAL_CHECKS_GROUP)
+    config["task_category_icons"] = {"all": ALL_TAB_ICON}
     # A registered trigger task can still run in the background, so hiding would not be enough.
     config["trigger_tasks"] = [entry for entry in config.get("trigger_tasks", []) if not entry[0].startswith(CN_TASK_PREFIX)]

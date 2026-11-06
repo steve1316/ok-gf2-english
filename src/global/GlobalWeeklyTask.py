@@ -1,5 +1,8 @@
 import re
 
+from src.region import GLOBAL_CHECKS_GROUP, GLOBAL_CHECKS_ICON
+from src.task_icons import ORANGE, two_tone
+
 from .BaseGlobalTask import CLAIM_ALL, PROCEED, BaseGlobalTask
 
 # Left rail of Regular Commissions. The card this opens is headed "Standard Battle", so the rail entry is
@@ -54,6 +57,9 @@ class GlobalWeeklyTask(BaseGlobalTask):
         """
         super().__init__(*args, **kwargs)
         self.name = 'Global Weekly'
+        self.icon = two_tone('weekly', ORANGE)
+        self.group_name = GLOBAL_CHECKS_GROUP
+        self.group_icon = GLOBAL_CHECKS_ICON
         self.description = 'Runs Boss Fight and collects the Peak Value Assessment rewards.'
         self.support_schedule_task = True
         self.register_flows(FLOWS)

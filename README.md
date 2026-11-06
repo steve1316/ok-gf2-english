@@ -104,6 +104,8 @@ The numbering starts at 7 because positions 1-6 belong to upstream's CN tasks, w
 are hidden unless **Region** is set to `CN`. They are documented in
 [upstream's repository](https://github.com/AliceJump/ok-gf2).
 
+Global Daily and Global Weekly sit under the **Global Checks** tab of the Tasks page, which is the tab the app opens on.
+
 Tasks 10-17 sit under the **Flow Checks** tab of the Tasks page. Each runs a single step of Global Daily or Global Weekly, for checking one flow at a
 time - see
 **[docs/en/global-tasks.md](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md)**.

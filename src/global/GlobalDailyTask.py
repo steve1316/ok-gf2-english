@@ -5,6 +5,8 @@ import numpy as np
 from ok import Box, find_boxes_by_name
 
 from src.core.BaseGfTask import map_re, parse_time_option
+from src.region import GLOBAL_CHECKS_GROUP, GLOBAL_CHECKS_ICON
+from src.task_icons import ORANGE, two_tone
 
 from .BaseGlobalTask import BUTTON_PAUSE, CANCEL, CLAIM_ALL, CLICK_ANYWHERE, CONFIRM, COUNTER, CREW_DECK, PAGE_DRAW_PAUSE, PROCEED, SHOP, SKIP, BaseGlobalTask
 
@@ -680,6 +682,9 @@ class GlobalDailyTask(BaseGlobalTask):
         """
         super().__init__(*args, **kwargs)
         self.name = 'Global Daily'
+        self.icon = two_tone('daily', ORANGE)
+        self.group_name = GLOBAL_CHECKS_GROUP
+        self.group_icon = GLOBAL_CHECKS_ICON
         self.description = 'Crew Deck, free packs, Event Supply and Boundary Push, then starts the in-game Loop.'
         self.instructions = INSTRUCTIONS
         self.support_schedule_task = True

@@ -9,6 +9,8 @@ text on screen directly rather than translating it.
 Pick which set you get in **Settings -> Region -> Game Client**. It defaults to `Global`, and the app
 has to be restarted after changing it.
 
+The Tasks page opens on the **Global Checks** tab, which holds Global Daily and Global Weekly.
+
 Game terms below use the wording from the Global / Steam client. See [../glossary.md](../glossary.md)
 for the full mapping.
 
