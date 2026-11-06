@@ -2,6 +2,7 @@ import builtins
 import dis
 import importlib
 import re
+import runpy
 import types
 import unittest
 
@@ -12,8 +13,14 @@ import pywintypes
 from unittest import mock
 
 from ok import Box, find_boxes_by_name, relative_box
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QPalette
+from PySide6.QtWidgets import QWidget
 from ok.task.task import OCR, BaseTask, ExecutorOperation
-from ok.gui.common.config import Language
+from ok.ui.qt.common.config import Language
+from ok.ui.qt.kit.dialogs import Dialog
+from ok.ui.qt.kit.icons import load_icon
+from ok.ui.qt.kit.theme import Theme, contrast_ratio, theme
 from ok.test.TaskTestCase import TaskTestCase
 from src.config import config
 
@@ -21,6 +28,34 @@ from src.config import config
 # resolved the same way the framework resolves it - by name, through importlib.
 GlobalDailyTask = importlib.import_module('src.global.GlobalDailyTask').GlobalDailyTask
 BaseGlobalTask = importlib.import_module('src.global.BaseGlobalTask').BaseGlobalTask
+
+
+def opaque_colours(pixmap):
+    """The fully opaque colours in a drawn icon.
+
+    Args:
+        pixmap: The drawn icon.
+
+    Returns:
+        A set of lowercase `#rrggbb` names.
+    """
+    image = pixmap.toImage()
+    pixels = (image.pixelColor(x, y) for x in range(image.width()) for y in range(image.height()))
+    return {pixel.name() for pixel in pixels if pixel.alpha() == 255}
+
+
+def region_selected(region_name):
+    """Patch region setup as if `region_name` were selected.
+
+    Every hide and move goes through `_set_after_post_init`, so patching it keeps the real task classes unwrapped.
+
+    Args:
+        region_name: The Game Client value to pretend is saved, `Global` or `CN`.
+
+    Returns:
+        A context manager holding the patches.
+    """
+    return mock.patch.multiple(importlib.import_module('src.region'), current_region=lambda *_: region_name, _set_after_post_init=mock.DEFAULT)
 
 
 class TestGlobalMain(TaskTestCase):
@@ -192,6 +227,104 @@ class TestGlobalMain(TaskTestCase):
         diagnosis = self.built_tasks()['DiagnosisTask']
         self.assertEqual(region.CHECKS_GROUP, diagnosis.group_name)
         self.assertEqual(region.DIAGNOSIS_TEXT, diagnosis.description)
+
+    def tasks_page(self, saved_filter='all'):
+        """The real Tasks page over the real tasks, with `saved_filter` as the tab remembered from last time and nothing touching `configs/`.
+
+        Args:
+            saved_filter: The tab key the page should find saved.
+
+        Returns:
+            The built `TasksPage`.
+        """
+        tasks_page = importlib.import_module('ok.ui.qt.tasks.tasks_page')
+        with mock.patch.object(tasks_page, 'Config', lambda *_: {'filter': saved_filter}):
+            page = tasks_page.TasksPage()
+        self.addCleanup(page.deleteLater)
+        return page
+
+    def test_tasks_page_opens_on_global_checks_whatever_was_open_last(self):
+        """Global Daily and Weekly are what the app is opened for, so a tab left open last time should not hide them."""
+        region = importlib.import_module('src.region')
+        for saved in ('all', 'group:Flow Checks'):
+            with self.subTest(saved):
+                page = self.tasks_page(saved)
+                self.assertEqual(f'group:{region.GLOBAL_CHECKS_GROUP}', page.current_filter())
+                self.assertEqual(['Global Daily', 'Global Weekly'], [row.task.name for row in page.onetime_section.rows if not row.isHidden()])
+                self.assertEqual('Global Daily', page.selected_task.name)
+
+    def test_tasks_page_lists_global_checks_before_flow_checks(self):
+        """Diagnosis registers first, so left alone the tab of tasks run while fixing something would come first."""
+        region = importlib.import_module('src.region')
+        self.assertEqual(['all', f'group:{region.GLOBAL_CHECKS_GROUP}', f'group:{region.CHECKS_GROUP}'], self.tasks_page().filter_tabs.keys())
+
+    def test_tab_picked_this_session_survives_a_task_list_refresh(self):
+        """Opening on Global Checks is for a fresh start only. The page rebuilds its tabs whenever the task list changes."""
+        page = self.tasks_page()
+        page.set_filter('all')
+        page.refresh_tasks()
+        self.assertEqual('all', page.current_filter())
+
+    def test_every_visible_task_has_its_own_icon(self):
+        """Without one a row falls back to a two-letter monogram."""
+        drawn = {}
+        for name, task in self.built_tasks().items():
+            if task.visible:
+                with self.subTest(name):
+                    self.assertIsInstance(task.icon, QIcon)
+                    drawn[bytes(task.icon.pixmap(QSize(32, 32)).toImage().constBits())] = name
+        self.assertEqual(11, len(drawn), f'two tasks share an icon: {drawn.values()}')
+
+    def test_task_icons_draw_their_key_colour_and_the_themes_ink_in_both_themes(self):
+        """The whole reason for the custom engine: the framework's own tint would flatten these to one colour."""
+        task_icons = importlib.import_module('src.task_icons')
+        self.addCleanup(theme.set_theme, theme.mode)
+        for key in (task_icons.ORANGE, task_icons.TEAL):
+            icon = task_icons.two_tone('daily', key)
+            for mode in (Theme.DARK, Theme.LIGHT):
+                with self.subTest(mode=mode, key=key):
+                    theme.set_theme(mode)
+                    colours = opaque_colours(icon.pixmap(QSize(64, 64)))
+                    self.assertIn(key[theme.is_dark()].lower(), colours)
+                    self.assertIn(theme.color('text').name(), colours)
+
+    def test_every_shipped_icon_is_used_and_loads_as_plain_paths(self):
+        """Qt's SVG Tiny renderer drops CSS, filters and text without complaint, so they would only show up as a blank row."""
+        task_icons = importlib.import_module('src.task_icons')
+        shipped = sorted(task_icons.ICON_DIR.glob('*.svg'))
+        self.assertEqual(14, len(shipped))
+        for path in shipped:
+            with self.subTest(path.name):
+                markup = path.read_text(encoding='ascii')
+                self.assertFalse(load_icon(str(path)).isNull())
+                self.assertEqual(set(), set(re.findall(r'<(\w+)', markup)) - {'svg', 'path'})
+                self.assertIn(task_icons.KEY_PLACEHOLDER, markup)
+                self.assertIn(task_icons.INK_PLACEHOLDER, markup)
+
+    def test_links_are_readable_on_the_dialog_they_are_shown_in(self):
+        """With no Link colour the palette kept Windows' own, a dark shade of the accent that read at 1.4:1 on the dark theme."""
+        self.addCleanup(theme.set_accent, theme.accent())
+        self.addCleanup(theme.set_theme, theme.mode)
+        # Shown, because a label only takes its link colour from the app's palette once the window it is added to is on screen.
+        parent = QWidget()
+        parent.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        theme.install(parent)
+        parent.show()
+        self.addCleanup(parent.deleteLater)
+        for accent in ('#E81123', '#0078D4'):
+            for mode in (Theme.DARK, Theme.LIGHT):
+                with self.subTest(accent=accent, mode=mode):
+                    theme.set_accent(accent)
+                    theme.set_theme(mode)
+                    dialog = Dialog(parent, 'Instructions')
+                    self.addCleanup(dialog.deleteLater)
+                    link = dialog.message_label.palette().color(QPalette.ColorRole.Link)
+                    self.assertGreaterEqual(contrast_ratio(link, theme.color('surface')), 4.5, link.name())
+
+    def test_global_checks_holds_only_global_daily_and_weekly(self):
+        region = importlib.import_module('src.region')
+        grouped = [name for name, task in self.built_tasks().items() if task.group_name == region.GLOBAL_CHECKS_GROUP]
+        self.assertEqual(['GlobalDailyTask', 'GlobalWeeklyTask'], grouped)
 
     def test_global_daily_offers_the_first_run_checklist(self):
         self.assertIn('docs/en/global-tasks.md', self.task.instructions)
@@ -1372,49 +1505,92 @@ class TestStartLock(unittest.TestCase):
     def start_lock(self):
         return importlib.import_module('src.start_lock')
 
-    def card(self, task, tasks):
-        """A stand-in task card whose task can see every task in `tasks`."""
+    def row(self, task, tasks, is_trigger=False):
+        """A stand-in task row whose task can see every task in `tasks`."""
         task.executor = types.SimpleNamespace(onetime_tasks=tasks)
-        return types.SimpleNamespace(onetime=True, task=task, start_button=mock.Mock())
+        button = None if is_trigger else mock.Mock(**{'toolTip.return_value': 'Start'})
+        return types.SimpleNamespace(is_trigger=is_trigger, task=task, action_button=button)
 
-    def drawn(self, card):
-        """Run the wrapped `update_buttons` over `card` and return its Start button. Translation is left as a pass-through."""
+    def detail(self, task, tasks, is_trigger=False):
+        """A stand-in detail pane showing `task`, whose task can see every task in `tasks`."""
+        if task is not None:
+            task.executor = types.SimpleNamespace(onetime_tasks=tasks)
+        return types.SimpleNamespace(is_trigger=is_trigger, task=task, run_button=mock.Mock())
+
+    def drawn(self, wrapper, widget):
+        """Run a wrapped `refresh` over `widget`. Translation is left as a pass-through."""
         original = mock.Mock()
         with mock.patch.object(self.start_lock(), 'og', types.SimpleNamespace(app=types.SimpleNamespace(tr=lambda key: key))):
-            self.start_lock()._locking_update_buttons(original)(card, card.task)
-        original.assert_called_once_with(card, card.task)
-        return card.start_button
+            wrapper(original)(widget)
+        original.assert_called_once_with(widget)
 
-    def test_another_running_task_locks_start(self):
+    def drawn_row(self, row):
+        """Run the wrapped `TaskRow.refresh` over `row` and return its button."""
+        self.drawn(self.start_lock()._locking_row_refresh, row)
+        return row.action_button
+
+    def drawn_detail(self, detail):
+        """Run the wrapped `TaskDetail.refresh` over `detail` and return its Run button."""
+        self.drawn(self.start_lock()._locking_detail_refresh, detail)
+        return detail.run_button
+
+    def test_another_running_task_locks_the_row(self):
         idle, running = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=True, name='Global Daily')
-        button = self.drawn(self.card(idle, [idle, running]))
+        button = self.drawn_row(self.row(idle, [idle, running]))
         button.setEnabled.assert_called_once_with(False)
         button.setToolTip.assert_called_once_with('Global Daily is running. Stop it first.')
 
-    def test_nothing_running_unlocks_start(self):
-        """Every card is redrawn when the running task stops, so this is what clears the lock."""
+    def test_another_running_task_locks_the_detail_pane(self):
+        """The detail pane has its own Run button, and it starts the same queue the row button does."""
+        idle, running = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=True, name='Global Daily')
+        button = self.drawn_detail(self.detail(idle, [idle, running]))
+        button.setEnabled.assert_called_once_with(False)
+        button.setToolTip.assert_called_once_with('Global Daily is running. Stop it first.')
+
+    def test_nothing_running_unlocks_the_row_and_keeps_its_tooltip(self):
+        """The framework has just set the row's own tooltip, so unlocking must not blank it."""
         idle, other = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=False)
-        button = self.drawn(self.card(idle, [idle, other]))
+        button = self.drawn_row(self.row(idle, [idle, other]))
+        button.setEnabled.assert_called_once_with(True)
+        button.setToolTip.assert_called_once_with('Start')
+
+    def test_nothing_running_clears_the_detail_pane(self):
+        """The framework never sets a tooltip on the Run button, so a stale lock message would otherwise stay."""
+        idle, other = types.SimpleNamespace(enabled=False), types.SimpleNamespace(enabled=False)
+        button = self.drawn_detail(self.detail(idle, [idle, other]))
         button.setEnabled.assert_called_once_with(True)
         button.setToolTip.assert_called_once_with('')
 
-    def test_a_card_whose_own_task_is_busy_is_left_alone(self):
-        """Its Start reads Resume while paused, and that has to stay clickable even with another task queued."""
+    def test_a_row_whose_own_task_is_busy_stays_clickable(self):
+        """Its button reads Stop or Resume, and it may have been locked until the moment its own task was started from elsewhere."""
         paused, queued = types.SimpleNamespace(enabled=True), types.SimpleNamespace(enabled=True, name='Global Weekly')
-        self.drawn(self.card(paused, [paused, queued])).setEnabled.assert_not_called()
+        self.drawn_row(self.row(paused, [paused, queued])).setEnabled.assert_called_once_with(True)
 
-    def test_a_trigger_card_is_left_alone(self):
-        """Trigger cards have an on/off switch rather than a Start button."""
-        card = types.SimpleNamespace(onetime=False, task=types.SimpleNamespace(enabled=False), start_button=mock.Mock())
-        self.assertEqual([], self.drawn(card).method_calls)
+    def test_a_trigger_row_is_left_alone(self):
+        """Trigger rows have an on/off switch and no button to lock."""
+        idle = types.SimpleNamespace(enabled=False)
+        self.assertIsNone(self.drawn_row(self.row(idle, [idle], is_trigger=True)))
 
-    def test_the_framework_still_redraws_every_one_time_card(self):
-        """The lock rides on every one-time card redrawing when any task changes. If an ok-script upgrade narrows that, locks would go stale."""
+    def test_a_detail_pane_with_no_one_time_task_is_left_alone(self):
+        """The pane starts empty, and for a trigger task its Run button is hidden."""
+        self.drawn_detail(self.detail(None, [])).setEnabled.assert_not_called()
+        idle = types.SimpleNamespace(enabled=False)
+        self.drawn_detail(self.detail(idle, [idle], is_trigger=True)).setEnabled.assert_not_called()
+
+    def test_one_task_changing_redraws_every_row(self):
+        """The framework redraws only the changed task's row, which would leave the others unlocked until the next one-second tick."""
+        original = mock.Mock()
+        page, task = object(), object()
+        self.start_lock()._redrawing_every_row(original)(page, task)
+        original.assert_called_once_with(page)
+
+    def test_the_framework_still_redraws_every_row_when_given_no_task(self):
+        """The lock asks for this redraw when any task changes. If an ok-script upgrade drops it, locks would lag behind the running task."""
         import inspect
 
-        from ok.gui.tasks import TaskCard
+        from ok.ui.qt.tasks.tasks_page import TasksPage
 
-        self.assertIn('if task == self.task or self.onetime:', inspect.getsource(TaskCard))
+        self.assertIn('for row in self.rows.values():', inspect.getsource(TasksPage._on_task_event))
 
     def test_the_tooltip_is_translated_for_the_cn_client(self):
         """The lock runs in both regions, so the Chinese catalog has to carry its tooltip too."""
@@ -1425,15 +1601,15 @@ class TestStartLock(unittest.TestCase):
         self.assertIsNotNone(entry, 'the zh_CN catalog has no entry for the locked Start tooltip')
         self.assertIn('{task_name}', entry.msgstr)
 
-    def test_the_framework_card_is_wrapped_once(self):
+    def test_the_framework_widgets_are_wrapped_once(self):
         """Region setup runs on every app start, so a second `apply` must not stack another wrapper."""
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.tasks_page import TaskDetail, TaskRow, TasksPage
 
         self.start_lock().apply()
-        wrapped = TaskCard.update_buttons
+        wrapped = TaskRow.refresh, TaskDetail.refresh, TasksPage._on_task_event
         self.start_lock().apply()
-        self.assertIs(wrapped, TaskCard.update_buttons)
-        self.assertIn(self.start_lock().MARKER, TaskCard.__dict__)
+        self.assertEqual(wrapped, (TaskRow.refresh, TaskDetail.refresh, TasksPage._on_task_event))
+        self.assertIn(self.start_lock().MARKER, TaskRow.__dict__)
 
 
 class TestRegionExtras(unittest.TestCase):
@@ -1444,6 +1620,8 @@ class TestRegionExtras(unittest.TestCase):
             'onetime_tasks': [['src.tasks.DailyTask', 'DailyTask']],
             'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
             'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
+            'window_size': {'width': 1200, 'height': 800, 'min_width': 600, 'min_height': 450},
+            'windows': {'interaction': ['GfInteraction', 'Genshin']},
             'links': {
                 'default': {'github': 'https://github.com/alicejump/ok-gf2', 'faq': 'https://github.com/alicejump/ok-gf2', 'discord': 'https://discord.gg/x'},
                 'zh_CN': {'github': 'https://github.com/alicejump/ok-gf2'},
@@ -1453,8 +1631,7 @@ class TestRegionExtras(unittest.TestCase):
     def applied(self, region_name):
         region = importlib.import_module('src.region')
         config = self.config()
-        # Every hide and move goes through `_set_after_post_init`, so patching it keeps the real task classes unwrapped.
-        with mock.patch.object(region, 'current_region', return_value=region_name), mock.patch.object(region, '_set_after_post_init'):
+        with region_selected(region_name):
             region.apply_region(config)
         return config
 
@@ -1466,15 +1643,53 @@ class TestRegionExtras(unittest.TestCase):
                 self.applied(region_name)
                 self.assertEqual(moves, move.called)
 
-    def test_global_drops_the_cn_tabs_and_trigger_tasks(self):
-        config = self.applied('Global')
-        self.assertEqual([], config['custom_tabs'])
-        self.assertEqual([], config['trigger_tasks'])
+    def test_global_drops_the_cn_trigger_tasks(self):
+        self.assertEqual([], self.applied('Global')['trigger_tasks'])
 
-    def test_cn_keeps_them(self):
-        config, expected = self.applied('CN'), self.config()
-        self.assertEqual(expected['custom_tabs'], config['custom_tabs'])
-        self.assertEqual(expected['trigger_tasks'], config['trigger_tasks'])
+    def test_cn_keeps_its_trigger_tasks(self):
+        self.assertEqual(self.config()['trigger_tasks'], self.applied('CN')['trigger_tasks'])
+
+    def test_only_our_own_interaction_is_offered_in_either_region(self):
+        """`GfInteraction` is built on the Genshin choice and adds the session mouse, so offering the plain one only offers a way to lose that."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertEqual(['GfInteraction'], self.applied(region_name)['windows']['interaction'])
+
+    def test_all_tab_icon_is_only_set_on_global(self):
+        """CN keeps the framework's own tabs, as its tasks are upstream's."""
+        self.assertIn('all', self.applied('Global')['task_category_icons'])
+        self.assertNotIn('task_category_icons', self.applied('CN'))
+
+    def test_no_category_colours_are_set(self):
+        """The framework would tint any icon whose category has a colour down to one colour, which undoes the two-tone icons."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertNotIn('task_category_colors', self.applied(region_name))
+
+    def test_tab_changes_only_apply_on_global(self):
+        """CN has no Global Checks tab to open on."""
+        region = importlib.import_module('src.region')
+        for region_name, applies in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region.task_tabs, 'apply') as apply:
+                self.applied(region_name)
+                self.assertEqual(applies, apply.called)
+
+    def test_upstreams_tabs_are_dropped_in_either_region(self):
+        """Both are built on `ok.gui` and qfluentwidgets, which ok-script 3 removed, so registering either crashes the app at startup."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertEqual([], self.applied(region_name)['custom_tabs'])
+
+    def test_the_window_cannot_shrink_below_what_the_tasks_page_needs(self):
+        """At upstream's 600x450 the detail pane slides over the task list. The default size must stay untouched, and both regions share the page."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertEqual({'width': 1200, 'height': 800, 'min_width': 1000, 'min_height': 600}, self.applied(region_name)['window_size'])
+
+    def test_the_game_is_named_for_the_run_bar_in_either_region(self):
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertEqual("Girls' Frontline 2", self.applied(region_name)['game_name'])
 
     def test_the_about_links_point_at_the_fork_in_either_region(self):
         """Upstream's community links stay, and a language without a FAQ button does not gain one."""
@@ -1490,6 +1705,22 @@ class TestRegionExtras(unittest.TestCase):
     def test_the_app_is_named_after_the_fork_in_either_region(self):
         for region_name in ('Global', 'CN'):
             self.assertEqual('ok-gf2-english', self.applied(region_name)['gui_title'])
+
+
+class TestEverythingRegisteredImports(unittest.TestCase):
+    """An upstream merge can bring in code for a framework this fork has moved past, and the app only finds out when it builds the page at startup."""
+
+    def registered(self, region_name):
+        """Return every `[module, class]` pair the app loads with `region_name` selected, run from a private copy of the real `src/config.py`."""
+        with region_selected(region_name):
+            config = runpy.run_module('src.config')['config']
+        return [config['my_app'], *config['onetime_tasks'], *config['trigger_tasks'], *config['custom_tabs']]
+
+    def test_in_either_region(self):
+        for region_name in ('Global', 'CN'):
+            for module, name in self.registered(region_name):
+                with self.subTest(region=region_name, module=module, name=name):
+                    self.assertTrue(isinstance(getattr(importlib.import_module(module), name), type))
 
 
 class TestSwipeRecovery(unittest.TestCase):

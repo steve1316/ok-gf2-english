@@ -1,15 +1,21 @@
 import importlib
 
-from qfluentwidgets import FluentIcon
-
 from ok import ConfigOption, Logger
 from ok.util.file import get_relative_path, read_json_file
-from src import start_lock
+from src import link_colour, start_lock, task_tabs
+from src.task_icons import ORANGE, TEAL, two_tone
 
 logger = Logger.get_logger(__name__)
 
 # Window title, About tab name, and exported log zip name. Set here rather than in upstream's `src/config.py` so the rename never conflicts on a merge.
 APP_TITLE = "ok-gf2-english"
+
+# What the run bar calls the game, as in "Start Girls' Frontline 2". Without it the bar says "Start Game".
+GAME_NAME = "Girls' Frontline 2"
+
+# The smallest window the Tasks page fits in: 216 sidebar + 372 task list + ~340 detail pane + margins, and 600 tall so the detail pane keeps some settings on
+# screen. At upstream's 600x450 the detail pane slides over the task list.
+MIN_WINDOW_SIZE = {"min_width": 1000, "min_height": 600}
 
 # The About tab's GitHub and FAQ buttons. Upstream's point at their CN repo, where questions about this fork do not belong. Discord, sponsor and QQ links
 # are the upstream author's own community, so they are left alone.
@@ -21,13 +27,23 @@ HIDDEN_MARKER = "_ok_gf2_region_hidden"
 # Same guard for the framework's Diagnosis task, once it has been moved onto the Flow Checks page.
 CHECKS_MARKER = "_ok_gf2_flow_checks"
 
-# The sidebar page the single-flow tasks live on. They are run while fixing something, not every day, so on the main Tasks page they buried Global Daily and
-# Global Weekly. Grouping only changes where they are drawn - their `-t N` positions come from the registration order and do not move.
+# The Tasks page filter tab the single-flow tasks live on. They are run while fixing something, not every day, so they should not bury Global Daily and Global
+# Weekly. Grouping only changes where they are drawn - their `-t N` positions come from the registration order and do not move.
 CHECKS_GROUP = "Flow Checks"
-CHECKS_ICON = FluentIcon.DEVELOPER_TOOLS
+CHECKS_ICON = two_tone("category-checks", TEAL)
+
+# The tab the Tasks page opens on. Global Daily and Global Weekly are what the app is opened for, so they get a tab to themselves.
+GLOBAL_CHECKS_GROUP = "Global Checks"
+GLOBAL_CHECKS_ICON = two_tone("global-checks", ORANGE)
+
+# The All tab takes its icon from the app config. Group tabs and task rows carry their own.
+ALL_TAB_ICON = two_tone("category-all", ORANGE)
 
 # The framework's own performance test. It is run while fixing something, like the single-flow tasks, and "Performance Test" did not say what it tests.
 DIAGNOSIS_TEXT = "Measures screen capture and OCR speed on this PC."
+
+# Upstream also offers the framework's plain input method. `GfInteraction` is built on it and adds the session mouse, so choosing the plain one only loses that.
+DROPPED_INTERACTION = "Genshin"
 
 REGION_CONFIG_NAME = "Region"
 REGION_CONFIG_KEY = "Game Client"
@@ -38,7 +54,8 @@ REGION_DEFAULT = REGION_GLOBAL
 # Module prefix of the CN task package. Anything registered from there belongs to the CN client.
 CN_TASK_PREFIX = "src.tasks."
 
-# Module prefix of upstream's own settings tabs. Multi-account setup and the important notices both describe the CN task set, in Chinese.
+# Module prefix of upstream's own settings tabs. Both are built on `ok.gui` and qfluentwidgets, which ok-script 3 removed, so loading either crashes the app at
+# startup. They stay dropped in both regions until upstream moves to ok-script 3, and the files are left alone so upstream merges stay clean.
 CN_TAB_PREFIX = "src.gui."
 
 # Tasks that drive the Global client. They live in src/global/ and match English on-screen text
@@ -64,7 +81,7 @@ region_option = ConfigOption(
     {REGION_CONFIG_KEY: REGION_DEFAULT},
     config_type={REGION_CONFIG_KEY: {"type": "drop_down", "options": [REGION_GLOBAL, REGION_CN]}},
     config_description={REGION_CONFIG_KEY: "Which game client to automate. Restart the app to apply."},
-    icon=FluentIcon.GLOBE,
+    icon="globe",
 )
 
 
@@ -134,11 +151,11 @@ def _set_after_post_init(module_path, class_name, marker, **attributes):
 
 def _move_diagnosis_to_checks():
     """Put the framework's Diagnosis task on the Flow Checks page, described by what it measures."""
-    _set_after_post_init("ok", "DiagnosisTask", CHECKS_MARKER, group_name=CHECKS_GROUP, group_icon=CHECKS_ICON, description=DIAGNOSIS_TEXT)
+    _set_after_post_init("ok", "DiagnosisTask", CHECKS_MARKER, group_name=CHECKS_GROUP, group_icon=CHECKS_ICON, icon=two_tone("diagnosis", TEAL), description=DIAGNOSIS_TEXT)
 
 
 def _hide_tasks(task_entries):
-    """Keep the given task classes out of the sidebar.
+    """Keep the given task classes off the Tasks page.
 
     Args:
         task_entries: `[module_path, class_name]` pairs to hide.
@@ -148,23 +165,31 @@ def _hide_tasks(task_entries):
 
 
 def apply_region(config):
-    """Register the Region setting and hide whichever region's tasks are not selected, along with upstream's CN-only tabs and trigger tasks on Global.
+    """Register the Region setting and hide whichever region's tasks are not selected, along with upstream's CN-only trigger tasks on Global.
 
     Global tasks are appended to whatever `src/config.py` already registered rather than replacing it. That keeps upstream as the single source of truth for
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
     ("-t N"), so reordering it would silently repoint them at the wrong task.
 
-    The app is also named `APP_TITLE`, its About links point at `APP_LINKS`, and the other Start buttons are locked while a task runs, whichever region is
-    selected.
+    The app is also named `APP_TITLE`, the game `GAME_NAME`, its About links point at `APP_LINKS`, upstream's tabs and `DROPPED_INTERACTION` are dropped, links get
+    a readable colour, and the other Start buttons are locked while a task runs, whichever region is selected.
 
     Args:
         config: The app config dict from `src/config.py`, mutated in place.
     """
     config["gui_title"] = APP_TITLE
+    config["game_name"] = GAME_NAME
+    config["window_size"] = {**config.get("window_size", {}), **MIN_WINDOW_SIZE}
     # Only the buttons a language already shows are repointed. zh_CN has no FAQ entry of its own.
     for links in config.get("links", {}).values():
         links.update({key: url for key, url in APP_LINKS.items() if key in links})
     start_lock.apply()
+    link_colour.apply()
+    # Dropped outright rather than hidden. This list is not indexed by "-t N".
+    config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
+    windows = config.get("windows", {})
+    # Stays a list. The framework only offers a choice of input method from one.
+    windows["interaction"] = [entry for entry in windows.get("interaction", []) if entry != DROPPED_INTERACTION]
     config.setdefault("global_configs", []).append(region_option)
     registered = config["onetime_tasks"]
     cn_tasks = [entry for entry in registered if entry[0].startswith(CN_TASK_PREFIX)]
@@ -174,6 +199,7 @@ def apply_region(config):
         return
     _hide_tasks(cn_tasks)
     _move_diagnosis_to_checks()
-    # Dropped outright rather than hidden. Neither list is indexed by "-t N", and a registered trigger task can still run in the background.
-    config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
+    task_tabs.apply(GLOBAL_CHECKS_GROUP)
+    config["task_category_icons"] = {"all": ALL_TAB_ICON}
+    # A registered trigger task can still run in the background, so hiding would not be enough.
     config["trigger_tasks"] = [entry for entry in config.get("trigger_tasks", []) if not entry[0].startswith(CN_TASK_PREFIX)]

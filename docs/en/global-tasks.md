@@ -9,6 +9,8 @@ text on screen directly rather than translating it.
 Pick which set you get in **Settings -> Region -> Game Client**. It defaults to `Global`, and the app
 has to be restarted after changing it.
 
+The Tasks page opens on the **Global Checks** tab, which holds Global Daily and Global Weekly.
+
 Game terms below use the wording from the Global / Steam client. See [../glossary.md](../glossary.md)
 for the full mapping.
 
@@ -150,8 +152,8 @@ which sits directly below `Manage Flower` in the same list and would harvest the
 
 ## Flow Checks
 
-These sit on the **Flow Checks** page in the sidebar, along with the framework's `Diagnosis` speed
-test. Each runs exactly **one** step and nothing else, which is how you check a single flow without
+These sit under the **Flow Checks** tab of the Tasks page, along with the framework's `Diagnosis`
+speed test. Each runs exactly **one** step and nothing else, which is how you check a single flow without
 sitting through the rest. Each is named after that step's switch in Global Daily or Global Weekly.
 They carry only the settings their own step reads - `Run Event Supply` keeps `Event Banner Slots`,
 `Crew Deck` keeps the walk timings, and the rest take no settings at all.

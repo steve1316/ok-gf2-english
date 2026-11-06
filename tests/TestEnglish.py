@@ -1,7 +1,7 @@
 # Test case
 import unittest
 
-from ok.gui.common.config import Language
+from ok.ui.qt.common.config import Language
 
 from src.config import config
 from src.tasks.DailyTask import DailyTask
