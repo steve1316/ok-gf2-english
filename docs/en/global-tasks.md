@@ -150,8 +150,8 @@ which sits directly below `Manage Flower` in the same list and would harvest the
 
 ## Flow Checks
 
-These sit on the **Flow Checks** page in the sidebar, along with the framework's `Diagnosis` speed
-test. Each runs exactly **one** step and nothing else, which is how you check a single flow without
+These sit under the **Flow Checks** tab of the Tasks page, along with the framework's `Diagnosis`
+speed test. Each runs exactly **one** step and nothing else, which is how you check a single flow without
 sitting through the rest. Each is named after that step's switch in Global Daily or Global Weekly.
 They carry only the settings their own step reads - `Run Event Supply` keeps `Event Banner Slots`,
 `Crew Deck` keeps the walk timings, and the rest take no settings at all.

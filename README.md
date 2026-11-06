@@ -78,7 +78,7 @@ here, and a setting decides which set you get.
 Open **Settings** and set **Region -> Game Client** to `Global` or `CN`. It defaults to `Global`, and
 **the app must be restarted after changing it**, because the task list is built at startup.
 
-Only the selected client's tasks appear in the sidebar, but both sets are always registered. That
+Only the selected client's tasks appear on the Tasks page, but both sets are always registered. That
 matters for the `-t` flag - see [Command-line arguments](#command-line-arguments).
 
 ### Tasks
@@ -104,7 +104,7 @@ The numbering starts at 7 because positions 1-6 belong to upstream's CN tasks, w
 are hidden unless **Region** is set to `CN`. They are documented in
 [upstream's repository](https://github.com/AliceJump/ok-gf2).
 
-Tasks 10-17 sit on the **Flow Checks** page in the sidebar. Each runs a single step of Global Daily or Global Weekly, for checking one flow at a
+Tasks 10-17 sit under the **Flow Checks** tab of the Tasks page. Each runs a single step of Global Daily or Global Weekly, for checking one flow at a
 time - see
 **[docs/en/global-tasks.md](https://github.com/steve1316/ok-gf2-english/blob/master/docs/en/global-tasks.md)**.
 
@@ -203,6 +203,11 @@ This project supports **Python 3.12 only**. Run CMD, PyCharm, or VSCode as **Adm
 # If your first clone did not include submodules, initialize them first
 git submodule update --init --recursive
 
+# Use a fresh virtual environment rather than upgrading an older install in place.
+# ok-script 3 replaces the PySide6 packages that older versions installed.
+python -m venv .venv
+.venv\Scripts\activate
+
 # CPU version, using OpenVINO
 pip install -r requirements.txt --upgrade
 
@@ -235,7 +240,7 @@ ok-gf2.exe -t 7 -e
   [Tasks](#tasks), so `-t 7` is Global Daily and `-t 8` is Global Weekly.
 
   > ⚠️ These numbers count **both** task sets, and they do not shift when you change region. `-t 1`
-  > still runs upstream's CN daily even on a Global install, which is not what the sidebar is showing
+  > still runs upstream's CN daily even on a Global install, which is not what the Tasks page is showing
   > you. The positions are held stable on purpose, so existing shortcuts and scheduled tasks keep
   > pointing at the same task.
 * `-e` or `--exit`: Exit automatically after the task completes.
