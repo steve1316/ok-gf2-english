@@ -13,8 +13,13 @@ import pywintypes
 from unittest import mock
 
 from ok import Box, find_boxes_by_name, relative_box
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QWidget
 from ok.task.task import OCR, BaseTask, ExecutorOperation
 from ok.ui.qt.common.config import Language
+from ok.ui.qt.kit.dialogs import Dialog
+from ok.ui.qt.kit.theme import Theme, contrast_ratio, theme
 from ok.test.TaskTestCase import TaskTestCase
 from src.config import config
 
@@ -207,6 +212,26 @@ class TestGlobalMain(TaskTestCase):
         diagnosis = self.built_tasks()['DiagnosisTask']
         self.assertEqual(region.CHECKS_GROUP, diagnosis.group_name)
         self.assertEqual(region.DIAGNOSIS_TEXT, diagnosis.description)
+
+    def test_links_are_readable_on_the_dialog_they_are_shown_in(self):
+        """With no Link colour the palette kept Windows' own, a dark shade of the accent that read at 1.4:1 on the dark theme."""
+        self.addCleanup(theme.set_accent, theme.accent())
+        self.addCleanup(theme.set_theme, theme.mode)
+        # Shown, because a label only takes its link colour from the app's palette once the window it is added to is on screen.
+        parent = QWidget()
+        parent.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        theme.install(parent)
+        parent.show()
+        self.addCleanup(parent.deleteLater)
+        for accent in ('#E81123', '#0078D4'):
+            for mode in (Theme.DARK, Theme.LIGHT):
+                with self.subTest(accent=accent, mode=mode):
+                    theme.set_accent(accent)
+                    theme.set_theme(mode)
+                    dialog = Dialog(parent, 'Instructions')
+                    self.addCleanup(dialog.deleteLater)
+                    link = dialog.message_label.palette().color(QPalette.ColorRole.Link)
+                    self.assertGreaterEqual(contrast_ratio(link, theme.color('surface')), 4.5, link.name())
 
     def test_global_daily_offers_the_first_run_checklist(self):
         self.assertIn('docs/en/global-tasks.md', self.task.instructions)

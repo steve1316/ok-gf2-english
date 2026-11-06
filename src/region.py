@@ -2,7 +2,7 @@ import importlib
 
 from ok import ConfigOption, Logger
 from ok.util.file import get_relative_path, read_json_file
-from src import start_lock
+from src import link_colour, start_lock
 
 logger = Logger.get_logger(__name__)
 
@@ -163,8 +163,8 @@ def apply_region(config):
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
     ("-t N"), so reordering it would silently repoint them at the wrong task.
 
-    The app is also named `APP_TITLE`, the game `GAME_NAME`, its About links point at `APP_LINKS`, upstream's tabs and `DROPPED_INTERACTION` are dropped, and the
-    other Start buttons are locked while a task runs, whichever region is selected.
+    The app is also named `APP_TITLE`, the game `GAME_NAME`, its About links point at `APP_LINKS`, upstream's tabs and `DROPPED_INTERACTION` are dropped, links get
+    a readable colour, and the other Start buttons are locked while a task runs, whichever region is selected.
 
     Args:
         config: The app config dict from `src/config.py`, mutated in place.
@@ -176,6 +176,7 @@ def apply_region(config):
     for links in config.get("links", {}).values():
         links.update({key: url for key, url in APP_LINKS.items() if key in links})
     start_lock.apply()
+    link_colour.apply()
     # Dropped outright rather than hidden. This list is not indexed by "-t N".
     config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
     windows = config.get("windows", {})
