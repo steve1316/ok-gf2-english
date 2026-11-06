@@ -3,11 +3,13 @@
 # so a second init in the same process fails.
 $env:PYTHONIOENCODING = 'UTF-8'
 $failed = 0
+# The project's own environment when there is one, because a global Python can hold a different ok-script.
+$python = if (Test-Path -LiteralPath .venv\Scripts\python.exe) { '.venv\Scripts\python.exe' } else { 'python' }
 
 Get-ChildItem -LiteralPath tests -Filter "Test*.py" | Sort-Object Name | ForEach-Object {
     $module = "tests.$($_.BaseName)"
     Write-Host "Running $module"
-    python -u -m unittest $module -v
+    & $python -u -m unittest $module -v
     if ($LASTEXITCODE -ne 0) { $failed = 1 }
 }
 
