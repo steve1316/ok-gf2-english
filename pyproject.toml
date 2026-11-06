@@ -4,10 +4,8 @@ version = "0.1.0"
 description = "Girls' Frontline 2 game automation built on ok-script"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "ok-script==2.0.5",
-    "PySide6-Essentials==6.9.1",
-    "PySide6-Fluent-Widgets==1.8.3",
-    "PySideSix-Frameless-Window==0.7.3",
+    "ok-script[ocr,qt]==3.0.4",
+    "mcp==2.3.0",
     "onnxocr-ppocrv5==0.0.11",
     "openvino==2026.0.0",
     "opencv-python==4.12.0.88",

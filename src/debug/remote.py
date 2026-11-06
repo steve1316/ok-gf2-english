@@ -44,8 +44,6 @@ COMMANDS = ('status', 'screenshot', 'texts', 'click', 'press_key', 'hold', 'sett
 STALE = 15
 # How often, in milliseconds, the window title is brought up to date.
 TITLE_CHECK = 2000
-# Where the main window class lives, newest layout first. ok-script's app builds `ok.gui`'s, and `ok.ui.qt` is the older layout.
-MAIN_WINDOWS = ('ok.gui.MainWindow', 'ok.ui.qt.MainWindow')
 
 # Actions waiting for the bot's thread, as `(action, future)` pairs.
 _actions = queue.Queue()
@@ -313,13 +311,9 @@ def set_running(task, running):
 
 def show_connection():
     """Add "MCP connected" to the main window's title while the MCP bridge is pinging."""
-    for module in MAIN_WINDOWS:
-        try:
-            main_window = __import__(module, fromlist=['MainWindow']).MainWindow
-            break
-        except (ImportError, AttributeError):
-            continue
-    else:
+    try:
+        from ok.ui.qt.MainWindow import MainWindow as main_window
+    except ImportError:
         logger.warning('could not import MainWindow, the title will not show the MCP connection')
         return
     original_init = main_window.__init__
