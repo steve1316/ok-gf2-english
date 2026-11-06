@@ -34,6 +34,9 @@ CHECKS_ICON = "bug"
 # The framework's own performance test. It is run while fixing something, like the single-flow tasks, and "Performance Test" did not say what it tests.
 DIAGNOSIS_TEXT = "Measures screen capture and OCR speed on this PC."
 
+# Upstream also offers the framework's plain input method. `GfInteraction` is built on it and adds the session mouse, so choosing the plain one only loses that.
+DROPPED_INTERACTION = "Genshin"
+
 REGION_CONFIG_NAME = "Region"
 REGION_CONFIG_KEY = "Game Client"
 REGION_GLOBAL = "Global"
@@ -160,8 +163,8 @@ def apply_region(config):
     its own task list, and it keeps every existing position stable - desktop shortcuts and Windows scheduled tasks store a positional index into this list
     ("-t N"), so reordering it would silently repoint them at the wrong task.
 
-    The app is also named `APP_TITLE`, the game `GAME_NAME`, its About links point at `APP_LINKS`, upstream's tabs are dropped, and the other Start buttons are
-    locked while a task runs, whichever region is selected.
+    The app is also named `APP_TITLE`, the game `GAME_NAME`, its About links point at `APP_LINKS`, upstream's tabs and `DROPPED_INTERACTION` are dropped, and the
+    other Start buttons are locked while a task runs, whichever region is selected.
 
     Args:
         config: The app config dict from `src/config.py`, mutated in place.
@@ -175,6 +178,9 @@ def apply_region(config):
     start_lock.apply()
     # Dropped outright rather than hidden. This list is not indexed by "-t N".
     config["custom_tabs"] = [entry for entry in config.get("custom_tabs", []) if not entry[0].startswith(CN_TAB_PREFIX)]
+    windows = config.get("windows", {})
+    # Stays a list. The framework only offers a choice of input method from one.
+    windows["interaction"] = [entry for entry in windows.get("interaction", []) if entry != DROPPED_INTERACTION]
     config.setdefault("global_configs", []).append(region_option)
     registered = config["onetime_tasks"]
     cn_tasks = [entry for entry in registered if entry[0].startswith(CN_TASK_PREFIX)]

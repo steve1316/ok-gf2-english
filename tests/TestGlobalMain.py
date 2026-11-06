@@ -1503,6 +1503,7 @@ class TestRegionExtras(unittest.TestCase):
             'trigger_tasks': [['src.tasks.TemplateMonitorTask', 'TemplateMonitorTask']],
             'custom_tabs': [['src.gui.AccountConfigTab', 'AccountConfigTab'], ['src.gui.ImportantNoticesTab', 'ImportantNoticesTab']],
             'window_size': {'width': 1200, 'height': 800, 'min_width': 600, 'min_height': 450},
+            'windows': {'interaction': ['GfInteraction', 'Genshin']},
             'links': {
                 'default': {'github': 'https://github.com/alicejump/ok-gf2', 'faq': 'https://github.com/alicejump/ok-gf2', 'discord': 'https://discord.gg/x'},
                 'zh_CN': {'github': 'https://github.com/alicejump/ok-gf2'},
@@ -1529,6 +1530,12 @@ class TestRegionExtras(unittest.TestCase):
 
     def test_cn_keeps_its_trigger_tasks(self):
         self.assertEqual(self.config()['trigger_tasks'], self.applied('CN')['trigger_tasks'])
+
+    def test_only_our_own_interaction_is_offered_in_either_region(self):
+        """`GfInteraction` is built on the Genshin choice and adds the session mouse, so offering the plain one only offers a way to lose that."""
+        for region_name in ('Global', 'CN'):
+            with self.subTest(region_name):
+                self.assertEqual(['GfInteraction'], self.applied(region_name)['windows']['interaction'])
 
     def test_upstreams_tabs_are_dropped_in_either_region(self):
         """Both are built on `ok.gui` and qfluentwidgets, which ok-script 3 removed, so registering either crashes the app at startup."""
