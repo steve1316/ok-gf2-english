@@ -66,6 +66,14 @@ class TestGlobalMain(TaskTestCase):
     lang = Language.ENGLISH
     config = config
 
+    def test_a_press_that_took_covers_both_water_bands_on_real_frames(self):
+        """Captured around one live press. The counter band read blank on these, which is what raised the false warning."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        for name in ('water_watering_animation', 'water_items_obtained'):
+            self.set_image(f'tests/images/{name}.jpg')
+            self.assertFalse(self.task.ocr(box=self.task.box_of_screen(*daily.WATER_BUTTON_BAND), match=daily.WATER), f'{name} should hide the Water button')
+            self.assertEqual([], self.task.ocr(box=self.task.box_of_screen(*daily.WATER_COUNTER_BAND)), f'{name} should hide the counter')
+
     def test_real_ocr_and_the_real_colour_helper_tell_the_tabs_apart(self):
         """The fakes stub both of these, so this is the one place the label OCR really finds and the framework's reading meet."""
         daily = importlib.import_module('src.global.GlobalDailyTask')
@@ -83,6 +91,12 @@ class TestGlobalMain(TaskTestCase):
                     self.assertTrue(found, f'{pattern} on {strip}')
                     expected = badged and tab.search('Regular') is not None
                     self.assertEqual(expected, self.task.tab_has_badge(found[0], tab), f'{pattern} on {strip}')
+
+    def test_the_flower_screen_alone_is_not_covered(self):
+        """A press the game swallowed leaves this screen up, and it must not read as the press having worked."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        self.set_image('tests/images/water_flower_screen_unpressed.jpg')
+        self.assertTrue(self.task.ocr(box=self.task.box_of_screen(*daily.WATER_BUTTON_BAND), match=daily.WATER))
 
     def test_is_main_on_english_home_screen(self):
         """The Global home screen should be recognised from its English labels plus the two home-only icons."""
@@ -2245,10 +2259,13 @@ class _Flower:
     close_flower_screen = GlobalDailyTask.close_flower_screen
     confirm_watered = GlobalDailyTask.confirm_watered
 
-    def __init__(self, counter='0/1', has_button=True, walkable_after=0, after='1/1'):
+    def __init__(self, counter='0/1', has_button=True, walkable_after=0, after='1/1', covered=False):
         self.counter = counter
         # What the counter reads once Water has been pressed.
         self.after = after
+        # Whether the Water button has gone once it has been pressed, which is what a screen covering it looks like.
+        self.covered = covered
+        self.counter_reads = 0
         self.has_button = has_button
         self.walkable_after = walkable_after
         self.clicked = []
@@ -2268,7 +2285,10 @@ class _Flower:
     def box_of_screen(self, *fractions):
         return fractions
 
-    def ocr(self, box=None, **kwargs):
+    def ocr(self, box=None, match=None, **kwargs):
+        if match is not None:
+            return [] if self.covered else [Box(1500, 540, 100, 40, name='Water')]
+        self.counter_reads += 1
         return [Box(1500, 650, 60, 30, name=self.counter)] if self.counter else []
 
     def in_walkable_deck(self):
@@ -2396,7 +2416,7 @@ class TestShopTabBadges(unittest.TestCase):
 
 
 class TestWaterFlower(unittest.TestCase):
-    """Watering is the one activity with no scene and no reward summary behind it - the counter under the button simply ticks over.
+    """Watering is the one activity with no scene behind it - the counter under the button simply ticks over.
 
     That is also the only thing that says the flower has been watered today, since watering grants no buff and lights nothing at the entrance.
     """
@@ -2424,11 +2444,27 @@ class TestWaterFlower(unittest.TestCase):
         self.assertFalse(task.water_flower())
         self.assertTrue(task.dumped, 'the screen that did not take the press should be kept')
 
+    def test_a_covered_screen_counts_as_the_press_having_taken(self):
+        """The look after the press lands on "Watering..." or Items Obtained, which hide the counter. That is the proof, not a reason to warn."""
+        task = _Flower(counter='0/1', after='', covered=True)
+        self.assertTrue(task.water_flower())
+        self.assertIn('Water Flower: watered.', task.logged)
+        self.assertFalse([line for line in task.logged if 'could not be read' in line])
+
+    def test_a_missed_button_read_cannot_call_a_dry_flower_watered(self):
+        """The counter still reading unspent outranks OCR having missed the word Water."""
+        task = _Flower(counter='0/1', after='0/1', covered=True)
+        self.assertFalse(task.water_flower())
+        self.assertNotIn('Water Flower: watered.', task.logged)
+
     def test_a_counter_unreadable_after_the_press_is_taken_on_trust(self):
         """The press landed on a Water button that was there. Failing it because OCR missed the counter would call a watered flower dry."""
         task = _Flower(counter='0/1', after='')
         self.assertTrue(task.water_flower())
         self.assertEqual([], task.dumped)
+        # One read before the press, then one for each look after it.
+        self.assertEqual(3, task.counter_reads)
+        self.assertEqual(1, len([line for line in task.logged if 'could not be read' in line]))
 
     def test_a_missing_button_is_reported_rather_than_assumed_done(self):
         """A screen with no Water button is not a watered flower, and the run should say what was on screen instead."""
@@ -2451,6 +2487,13 @@ class TestWaterFlower(unittest.TestCase):
         task = _Flower(walkable_after=3)
         task.water_flower()
         self.assertEqual(3, task.backs)
+
+    def test_a_watering_that_pays_out_still_gets_off_the_screen(self):
+        """A reward day adds Items Obtained to the close, on top of the animation and the flower screen, and the animation can take two presses."""
+        task = _Flower(walkable_after=4)
+        task.water_flower()
+        self.assertEqual(4, task.backs)
+        self.assertFalse([line for line in task.logged if 'did not close' in line])
 
     def test_a_screen_that_will_not_close_says_so(self):
         """It used to give up silently. The run then carried on believing it was standing on the walkable deck when it was not."""
