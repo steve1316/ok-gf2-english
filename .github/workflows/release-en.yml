@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, as YEAR.MM.DD. Tagged as v2026.08.31.'
-        required: true
+        description: 'Version as YEAR.MMDD.N, e.g. 2026.1101.2. Leave blank for today (UTC) and the next free N.'
+        required: false
         type: string
       prerelease:
         description: 'Mark the release as a pre-release'
@@ -26,20 +26,6 @@ jobs:
       PYTHONIOENCODING: 'UTF-8'
 
     steps:
-      # pyappify only sees tags matching ^v?\d+\.\d+\.\d+$, so no "en" marker can go in the tag name.
-      # Versions are CalVer (year.month.day, month and day zero-padded to two digits) to stay clear of upstream's
-      # v1.2.x line. The parts are compared as numbers, so a second release on one day just needs a higher third part.
-      - name: Check the version and settle the tag
-        shell: pwsh
-        run: |
-          $version = "${{ inputs.version }}"
-          if ($version -notmatch '^\d{4}\.\d{2}\.\d{2}$') {
-            Write-Error "Version must look like 2026.08.31, got '$version'."
-            exit 1
-          }
-          "TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Releasing as v$version"
-
       - name: Configure git
         shell: pwsh
         run: |
@@ -54,10 +40,13 @@ jobs:
           lfs: true
           fetch-depth: 0
 
-      # pyappify seeds the offline installer by cloning git_url and checking out the newest release tag on the
+      # pyappify only sees tags matching ^v?\d+\.\d+\.\d+$, so no "en" marker can go in the tag name and a same-day
+      # counter cannot be a fourth part. Versions are year.MMDD.N, where N counts releases on that UTC day. The parts
+      # compare as numbers, so this stays clear of upstream's v1.2.x line and outranks the old year.MM.DD tags.
+      # pyappify also seeds the offline installer by cloning git_url and checking out the newest release tag on the
       # remote, so a release is only correct when the tag being built is that newest tag. Tagging after the build
       # shipped a v2026.8.30 installer that held v2026.8.26 and updated itself on first launch.
-      - name: Check the tag will be the newest on origin
+      - name: Settle the tag and check it will be the newest on origin
         shell: pwsh
         run: |
           function Get-VersionKey($tag) {
@@ -70,13 +59,27 @@ jobs:
             exit 1
           }
           $names = @($refs) -replace '^\S+\s+refs/tags/', '' -replace '\^\{\}$', ''
-          $tagKey = Get-VersionKey $env:TAG
-          $newer = @($names | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and (Get-VersionKey $_) -ge $tagKey } | Sort-Object -Unique)
-          if ($newer) {
-            Write-Error "origin already has $($newer -join ', '), which outrank or match $env:TAG. Release a newer version."
+          $version = "${{ inputs.version }}".Trim()
+          if (-not $version) {
+            $date = (Get-Date).ToUniversalTime().ToString('yyyy.MMdd')
+            $taken = $names | ForEach-Object { if ($_ -match "^v$date\.(\d+)$") { [int]$Matches[1] } }
+            $version = "$date.$([int]($taken | Measure-Object -Maximum).Maximum + 1)"
+          }
+          $parsed = [datetime]::MinValue
+          if ($version -notmatch '^(\d{4}\.\d{4})\.[1-9]\d*$' -or
+              -not [datetime]::TryParseExact($Matches[1], 'yyyy.MMdd', [cultureinfo]::InvariantCulture, 'None', [ref]$parsed)) {
+            Write-Error "Version must look like 2026.1101.1, got '$version'."
             exit 1
           }
-          Write-Host "$env:TAG will be the newest tag on origin"
+          $tag = "v$version"
+          $tagKey = Get-VersionKey $tag
+          $newer = @($names | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and (Get-VersionKey $_) -ge $tagKey } | Sort-Object -Unique)
+          if ($newer) {
+            Write-Error "origin already has $($newer -join ', '), which outrank or match $tag. Release a newer version."
+            exit 1
+          }
+          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Releasing as $tag, the newest tag on origin"
 
       - name: Set up Python
         uses: actions/setup-python@v5
