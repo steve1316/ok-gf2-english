@@ -1,8 +1,10 @@
 import builtins
 import dis
 import importlib
+import os
 import re
 import runpy
+import tempfile
 import types
 import unittest
 
@@ -21,6 +23,7 @@ from ok.ui.qt.common.config import Language
 from ok.ui.qt.kit.dialogs import Dialog
 from ok.ui.qt.kit.icons import load_icon
 from ok.ui.qt.kit.theme import Theme, contrast_ratio, theme
+from ok.util.color import calculate_color_percentage
 from ok.test.TaskTestCase import TaskTestCase
 from src.config import config
 
@@ -62,6 +65,24 @@ class TestGlobalMain(TaskTestCase):
     task_class = GlobalDailyTask
     lang = Language.ENGLISH
     config = config
+
+    def test_real_ocr_and_the_real_colour_helper_tell_the_tabs_apart(self):
+        """The fakes stub both of these, so this is the one place the label OCR really finds and the framework's reading meet."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        tabs = {tab.pattern: tab for tab in daily.FREE_BOX_TABS}
+        for strip, badged in (('shop_tabs_regular_badged', True), ('shop_tabs_no_badge', False)):
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            image = cv2.imread(f'tests/images/{strip}.png')
+            frame[:image.shape[0]] = image
+            with tempfile.TemporaryDirectory() as folder:
+                full = os.path.join(folder, 'full.png')
+                cv2.imwrite(full, frame)
+                self.set_image(full)
+                for pattern, tab in tabs.items():
+                    found = self.task.ocr(box=self.task.box.top, match=tab)
+                    self.assertTrue(found, f'{pattern} on {strip}')
+                    expected = badged and tab.search('Regular') is not None
+                    self.assertEqual(expected, self.task.tab_has_badge(found[0], tab), f'{pattern} on {strip}')
 
     def test_is_main_on_english_home_screen(self):
         """The Global home screen should be recognised from its English labels plus the two home-only icons."""
@@ -2265,6 +2286,113 @@ class _Flower:
         self.clicked.append('Water')
         self.counter = self.after
         return Box(1500, 540, 100, 40, name='Water')
+
+
+class _Shop:
+    """A stand-in for the daily task on the shop's tab strip, recording which tabs get opened."""
+
+    shopping = GlobalDailyTask.shopping
+    tab_has_badge = GlobalDailyTask.tab_has_badge
+    claim_free_boxes = GlobalDailyTask.claim_free_boxes
+    info_set = lambda self, *args: None
+    width = 1920
+    height = 1080
+
+    def __init__(self, strip, labels=(('Treasured Gift Pack', 610, 224), ('Regular Gift Pack', 892, 198)), free_on=()):
+        self.frame = None
+        if strip is not None:
+            self.frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            image = cv2.imread(f'tests/images/{strip}.png')
+            assert image is not None, strip
+            self.frame[:image.shape[0]] = image
+        self.labels = [Box(x, 127, width, 27, name=name) for name, x, width in labels]
+        self.free_on = list(free_on)
+        self.opened = []
+        self.logged = []
+        self.dumped = []
+        self.box = types.SimpleNamespace(top=(0, 0, 1, 0.5), right=None, left=None)
+
+    def log_info(self, message, notify=False):
+        self.logged.append(message)
+
+    def dump_screen(self, name):
+        self.dumped.append(name)
+
+    def click_ocr_word(self, *args, **kwargs):
+        return True
+
+    def press_until(self, *args, **kwargs):
+        return True
+
+    def wait_ocr(self, match=None, box=None, time_out=0, **kwargs):
+        return find_boxes_by_name(self.labels, match) or None
+
+    def calculate_color_percentage(self, color, box):
+        return calculate_color_percentage(self.frame, color, box)
+
+    def sleep(self, seconds):
+        pass
+
+    def click_box_by_match_position(self, found, match, after_sleep=0):
+        self.opened.append(found[0].name)
+
+    def claim_free_box(self):
+        if self.opened and self.opened[-1] in self.free_on:
+            self.free_on.remove(self.opened[-1])
+            return True
+        return False
+
+    def go_home(self):
+        pass
+
+
+class TestShopTabBadges(unittest.TestCase):
+    """A tab with something to claim carries an orange badge, so a tab without one is not worth the five seconds of opening it."""
+
+    def test_only_the_badged_tab_is_opened(self):
+        """The live run behind this: Treasured opened and read for three seconds, with the badge plainly on Regular."""
+        task = _Shop('shop_tabs_regular_badged', free_on=['Regular Gift Pack'])
+        task.shopping()
+        self.assertEqual(['Regular Gift Pack'], task.opened)
+        self.assertIn('claimed 1 free supply box(es)', task.logged)
+
+    def test_no_tab_is_opened_once_everything_is_claimed(self):
+        task = _Shop('shop_tabs_no_badge')
+        task.shopping()
+        self.assertEqual([], task.opened)
+        self.assertIn('claimed 0 free supply box(es)', task.logged)
+
+    def test_the_skip_is_logged_with_its_reading(self):
+        """A wrongly skipped tab loses a free box without a word otherwise, so the log has to show what was measured."""
+        task = _Shop('shop_tabs_no_badge')
+        task.shopping()
+        self.assertEqual(2, len([line for line in task.logged if 'no badge' in line and '0.000' in line]))
+
+    def test_a_split_label_finds_the_same_badge(self):
+        """OCR splits these labels unpredictably, and the first word starts in the same place either way."""
+        labels = (('Treasured', 610, 110), ('Gift Pack', 730, 104), ('Regular', 892, 86), ('Gift Pack', 985, 105))
+        task = _Shop('shop_tabs_regular_badged', labels=labels)
+        task.shopping()
+        self.assertEqual(['Regular'], task.opened)
+
+    def test_two_tabs_merged_into_one_box_still_find_the_right_badge(self):
+        """The word's own share of a merged box is where its tab starts, the same reasoning `click_ocr_word` uses for the bottom nav."""
+        name = 'Treasured Gift Pack Regular Gift Pack'
+        task = _Shop('shop_tabs_regular_badged', labels=((name, 610, 480),))
+        self.assertFalse(task.tab_has_badge(task.labels[0], re.compile('Treasured', re.I)))
+        self.assertTrue(task.tab_has_badge(task.labels[0], re.compile('Regul', re.I)))
+
+    def test_with_no_frame_the_tab_is_opened_anyway(self):
+        """Unknown is not empty. Skipping on a missing frame would quietly lose both free boxes."""
+        task = _Shop(None)
+        task.shopping()
+        self.assertEqual(['Treasured Gift Pack', 'Regular Gift Pack'], task.opened)
+
+    def test_a_missing_tab_is_still_reported(self):
+        task = _Shop('shop_tabs_no_badge', labels=(('Regular Gift Pack', 892, 198),))
+        task.shopping()
+        self.assertTrue([line for line in task.logged if 'Could not find' in line])
+        self.assertEqual(1, len(task.dumped))
 
 
 class TestWaterFlower(unittest.TestCase):
