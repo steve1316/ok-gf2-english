@@ -3,14 +3,15 @@
 # third-party actions the workflow needs. It tags and pushes for you. Creating the GitHub release and uploading
 # the files stay manual. It differs from the workflow in one deliberate way, noted at the tag check below.
 #
-#   .\local_release.ps1 -Version 2026.08.31
+#   .\local_release.ps1                        # today (UTC) and the next free N
+#   .\local_release.ps1 -Version 2026.1101.1   # a set version, e.g. to resume a run that failed after the push
 #
 # Needs git, Node, pnpm, a Rust MSVC toolchain with the VS C++ build tools, and Python 3.12 on PATH.
 # Run it from an elevated PowerShell, since building the offline package runs the launcher as administrator.
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    # year.MMDD.N. Left out, it is today's UTC date with the next N not yet on origin, as in the workflow.
     [string]$Version,
 
     # Skip the test run. The workflow always runs them, so only use this to re-build a version already tested.
@@ -73,8 +74,16 @@ function Get-RemoteReleaseTags {
 # Preflight
 
 Write-Step 'Checking the version and settling the tag'
-if ($Version -notmatch '^\d{4}\.\d{2}\.\d{2}$') {
-    throw "Version must look like 2026.08.31, got '$Version'."
+$RemoteTags = Get-RemoteReleaseTags
+if (-not $Version) {
+    $date = (Get-Date).ToUniversalTime().ToString('yyyy.MMdd')
+    $taken = $RemoteTags.Keys | ForEach-Object { if ($_ -match "^v$date\.(\d+)$") { [int]$Matches[1] } }
+    $Version = "$date.$([int]($taken | Measure-Object -Maximum).Maximum + 1)"
+}
+$parsed = [datetime]::MinValue
+if ($Version -notmatch '^(\d{4}\.\d{4})\.[1-9]\d*$' -or
+    -not [datetime]::TryParseExact($Matches[1], 'yyyy.MMdd', [cultureinfo]::InvariantCulture, 'None', [ref]$parsed)) {
+    throw "Version must look like 2026.1101.1 (year.MMDD.N), got '$Version'."
 }
 $Tag = "v$Version"
 Write-Host "    Releasing as $Tag"
@@ -123,7 +132,6 @@ Write-Host "    Building commit $commit"
 # named after, so releasing anything but the newest version ships the wrong code under the right filename. That
 # is how a v2026.8.30 installer came to hold v2026.8.26. Check it here, before the slow work, and push below.
 Write-Step 'Checking the tag will be the newest on origin'
-$RemoteTags = Get-RemoteReleaseTags
 $tagKey = Get-VersionKey $Tag
 $newer = @($RemoteTags.Keys | Where-Object { (Get-VersionKey $_) -gt $tagKey } | Sort-Object)
 if ($newer) {
