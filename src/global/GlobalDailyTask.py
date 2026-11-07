@@ -155,6 +155,17 @@ FREE_BOX_TABS = (re.compile(r'Treasured', re.I), re.compile(r'Regul', re.I))
 # bottom-right corner is what made this claim nothing at all on any page but Premium Selections.
 CARD_GRID = (0.15, 0.18, 1.0, 1.0)
 
+# Where the orange badge sits on a tab with something to claim, as (left, top, right, bottom) fractions of the frame from the start of the
+# tab's first word and the top of its label. The first word is the anchor because its start stays put when OCR splits the label. Measured
+# on Regular at 1920x1080, the badge spans x +207 to +226 and y -14 to +12. Treasured's tab is the same width with its label starting 15px
+# further left, so its badge should land at +221 to +240. The region covers both and stops short of the next tab's badge.
+TAB_BADGE_REGION = (0.099, -0.0185, 0.130, 0.0185)
+# The badge's orange, which averages (32, 109, 240) in BGR.
+TAB_BADGE_COLOUR = {'r': (200, 255), 'g': (70, 150), 'b': (0, 70)}
+# How much of the region has to be that orange. Over 217 kept frames, a badged Regular tab reads 0.112 to 0.126 and anything else on the shop reads 0.000.
+# The idle deck reaches 0.005. The Items Obtained banner reaches 0.105, but the tabs are not being looked at then and a false reading only opens a tab.
+TAB_BADGE_LIT_FRACTION = 0.05
+
 # Wishlist, reached from the bottom-left of the shop. It gathers what has been picked out for later across
 # six in-game shops, each its own category in a left rail. Every label there wraps onto two lines that OCR
 # splits apart, so each is matched on its distinctive first word.
@@ -319,8 +330,8 @@ INGREDIENT_SPOTS = ((0.236, 0.283), (0.308, 0.283))
 WATER_BUTTON_BAND = (0.74, 0.44, 0.87, 0.57)
 WATER_COUNTER_BAND = (0.74, 0.57, 0.87, 0.65)
 
-# How many times to read the counter after pressing Water, and how long to wait between reads. Not measured: the press already waits 2s, and one
-# more look covers a counter that ticks over with an animation slower than that. It only reads, and never presses Water a second time.
+# How many times to look after pressing Water, and how long to wait between looks. The press already waits 2s, and one more look covers a
+# counter still ticking over behind it. It only reads, and never presses Water a second time.
 WATER_CONFIRM_READS = 2
 WATER_CONFIRM_PAUSE = 2
 
@@ -332,8 +343,9 @@ MAKE_PRESSES = 2
 # after each press. Watering plays no scene, but it does play an animation that swallows Escape for several
 # seconds - a live run spent three presses inside one and closed nothing - so the presses are spaced by
 # waiting for the deck rather than by a flat sleep. That returns the moment the animation ends and still
-# covers a longer one.
-MAX_FLOWER_CLOSES = 3
+# covers a longer one. A watering that pays out needs one more: on 2026-11-06 the animation took the first
+# press, Items Obtained the second and the flower screen the third, which left no press spare.
+MAX_FLOWER_CLOSES = 4
 FLOWER_CLOSE_TIME_OUT = 3
 
 # (config key, default, settings text). Durations rather than coordinates, because the walk is the part
@@ -744,7 +756,7 @@ class GlobalDailyTask(BaseGlobalTask):
 
         The category and both tabs are opened by name rather than the shop being read wherever it happened to land. The landing page moves - a waiting free
         pack redirects into Quality Selection - and the free box sits somewhere different on each, so reading only the page the shop opened on missed both
-        the weekly box and the daily one.
+        the weekly box and the daily one. A tab with no badge has nothing to claim, so it is not opened at all.
         """
         self.info_set('current_task', 'shopping')
         # No sleep: the category click below waits for the shop's own rail to appear.
@@ -755,11 +767,14 @@ class GlobalDailyTask(BaseGlobalTask):
         if self.press_until(lambda: self.click_ocr_word(QUALITY_SELECTION, box=self.box.left, time_out=SCREEN_SETTLE_TIME_OUT),
                             list(FREE_BOX_TABS), box=self.box.top, what='Quality Selection'):
             for tab in FREE_BOX_TABS:
-                if self.click_ocr_word(tab, box=self.box.top, time_out=5, after_sleep=2):
-                    claimed += self.claim_free_boxes()
-                else:
+                found = self.wait_ocr(match=tab, box=self.box.top, time_out=5)
+                if not found:
                     self.log_info(f'Could not find the {tab.pattern} tab, so its free box was not checked.')
                     self.dump_screen(f'shop_no_{tab.pattern}_tab')
+                elif self.tab_has_badge(found[0], tab):
+                    self.sleep(BUTTON_PAUSE)
+                    self.click_box_by_match_position(found, tab, after_sleep=2)
+                    claimed += self.claim_free_boxes()
         else:
             # Without the category this is on a page it does not recognise, and the page is still worth
             # reading before giving up - it is where the daily box used to be claimed from.
@@ -767,6 +782,29 @@ class GlobalDailyTask(BaseGlobalTask):
             claimed += self.claim_free_boxes()
         self.log_info(f'claimed {claimed} free supply box(es)')
         self.go_home()
+
+    def tab_has_badge(self, label, tab):
+        """Whether a shop tab carries the orange badge that says something on it can be claimed.
+
+        Args:
+            label: The box OCR read the tab's label into, which may hold only part of the label or a neighbouring tab's too.
+            tab: The pattern that found the label, used to locate the tab's first word inside it.
+
+        Returns:
+            True when the badge is there or there is no frame to tell from, since a skipped tab loses its free box. False when the tab has no badge.
+        """
+        frame = self.frame
+        if frame is None:
+            return True
+        word_x = label.x + label.width * tab.search(label.name).start() / len(label.name)
+        left, top, right, bottom = TAB_BADGE_REGION
+        region = Box(x=int(word_x + left * self.width), y=int(label.y + top * self.height), to_x=int(word_x + right * self.width), to_y=int(label.y + bottom * self.height))
+        fraction = self.calculate_color_percentage(TAB_BADGE_COLOUR, region)
+        # The number goes in the log beside the verdict, since a wrongly skipped tab loses a free box and nothing else would say why.
+        if fraction < TAB_BADGE_LIT_FRACTION:
+            self.log_info(f'the {tab.pattern} tab has no badge ({fraction:.3f}), so not opening it')
+            return False
+        return True
 
     def claim_free_boxes(self):
         """Claim every free box on the page that is open.
@@ -1448,8 +1486,8 @@ class GlobalDailyTask(BaseGlobalTask):
     def close_flower_screen(self):
         """Back out of the flower screen until the walkable deck is up again.
 
-        Not `finish_activity`, which watering has nothing for - there is no scene and no reward summary, so that would spend its whole start budget waiting
-        for a Skip that never comes. The deck is checked before each press rather than after, because Escape at the walkable deck raises the leave-the-deck
+        Not `finish_activity`, which watering has nothing for - there is no scene, so that would spend its whole start budget waiting for a Skip that never
+        comes. The deck is checked before each press rather than after, because Escape at the walkable deck raises the leave-the-deck
         confirmation, which is the opposite of what the walk back needs.
 
         Each press is followed by waiting for the deck rather than a fixed pause. The watering animation swallows Escape while it plays, so the press that
@@ -1479,40 +1517,48 @@ class GlobalDailyTask(BaseGlobalTask):
         Returns:
             True when the flower was watered or was already watered today, False when the Water button was not on screen or the press did not take.
         """
-        counter = self.box_of_screen(*WATER_COUNTER_BAND)
+        counter, button = self.box_of_screen(*WATER_COUNTER_BAND), self.box_of_screen(*WATER_BUTTON_BAND)
         if self.uses_left(counter, 'Water button') == 0:
             self.log_info('Water Flower: already watered today, so nothing to do.', notify=True)
             watered = True
-        elif not self.wait_click_ocr(match=WATER, box=self.box_of_screen(*WATER_BUTTON_BAND), time_out=5, after_sleep=2):
+        elif not self.wait_click_ocr(match=WATER, box=button, time_out=5, after_sleep=2):
             self.log_info('Water Flower: no Water button on the flower screen.', notify=True)
             self.dump_screen('crew_deck_Water_Flower_no_button')
             watered = False
         else:
-            watered = self.confirm_watered(counter)
+            watered = self.confirm_watered(counter, button)
         # One call rather than one per branch, so the screen cannot be left open by a path that forgets it.
         self.close_flower_screen()
         return watered
 
-    def confirm_watered(self, counter):
-        """Read the counter again after pressing Water, since the press is the one step that can quietly not take.
+    def confirm_watered(self, counter, button):
+        """Check that pressing Water took, since the press is the one step that can quietly not take.
+
+        A press that took covers the flower screen, first with a full-screen "Watering..." and then with Items Obtained when the watering pays out. That
+        popup stays until something is pressed, so waiting longer would not bring the counter back. A swallowed press leaves the screen as it was, so a
+        counter and a button that have both gone mean the press landed.
 
         Args:
             counter: The band under the Water button that holds its uses-left counter.
+            button: The band holding the Water button.
 
         Returns:
-            True when the counter shows today's watering used, or could not be read at all. False when it still shows it unused.
+            True when the counter shows today's watering used, the screen is covered, or the counter alone could not be read. False when it still shows it
+            unused.
         """
+        left = None
         for attempt in range(WATER_CONFIRM_READS):
             if attempt:
                 self.sleep(WATER_CONFIRM_PAUSE)
             left = self.uses_left(counter, 'Water button')
-            if left == 0:
+            # The counter goes first, so a Water button OCR happened to miss cannot call a dry flower watered.
+            if left == 0 or (left is None and not self.ocr(box=button, match=WATER)):
                 self.log_info('Water Flower: watered.', notify=True)
                 return True
-            # Taken on trust. The press landed on a Water button that was there, and a missed counter is not a dry flower.
-            if left is None:
-                self.log_info('Water Flower: pressed Water, but the counter could not be read to confirm it.', notify=True)
-                return True
+        # Taken on trust. The press landed on a Water button that was there, and a missed counter is not a dry flower.
+        if left is None:
+            self.log_info('Water Flower: pressed Water, but the counter could not be read to confirm it.', notify=True)
+            return True
         self.log_info("Water Flower: pressed Water, but the counter still shows today's watering unused.", notify=True)
         self.dump_screen('crew_deck_Water_Flower_did_not_take')
         return False
