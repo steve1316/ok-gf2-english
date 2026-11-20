@@ -18,7 +18,7 @@ from unittest import mock
 from ok import Box, find_boxes_by_name, relative_box
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QPalette
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QTableWidget, QTableWidgetItem, QWidget
 from ok.task.task import OCR, BaseTask, ExecutorOperation
 from ok.ui.qt.common.config import Language
 from ok.ui.qt.kit.dialogs import Dialog
@@ -1707,6 +1707,14 @@ class TestRegionExtras(unittest.TestCase):
         region = importlib.import_module('src.region')
         for region_name, applies in (('Global', True), ('CN', False)):
             with self.subTest(region_name), mock.patch.object(region.task_tabs, 'apply') as apply:
+                self.applied(region_name)
+                self.assertEqual(applies, apply.called)
+
+    def test_info_table_changes_only_apply_on_global(self):
+        """CN's tasks write upstream's own Info rows, which were laid out for the framework's table."""
+        region = importlib.import_module('src.region')
+        for region_name, applies in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region.info_table, 'apply') as apply:
                 self.applied(region_name)
                 self.assertEqual(applies, apply.called)
 
@@ -3402,6 +3410,62 @@ class TestElapsedRow(unittest.TestCase):
         with mock.patch.object(BaseTask, 'info_clear'):
             task.info_clear()
         self.assertEqual(0, task.start_time)
+
+
+class _Detail:
+    """A stand-in for the framework's `TaskDetail`: an Info table built the way the framework builds it, and a `_fill_info` that writes `rows` into it."""
+
+    def __init__(self):
+        self.rows = []
+        self.info_table = QTableWidget(0, 2)
+        self.info_table.verticalHeader().setDefaultSectionSize(40)
+        self.info_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.info_table.horizontalHeader().setStretchLastSection(True)
+        self.info_table.resize(600, 400)
+
+    def _fill_info(self):
+        self.info_table.setRowCount(len(self.rows))
+        for row, (key, value) in enumerate(self.rows):
+            self.info_table.setItem(row, 0, QTableWidgetItem(key))
+            self.info_table.setItem(row, 1, QTableWidgetItem(value))
+
+
+class TestInfoTable(unittest.TestCase):
+    """The flow rows carry a sentence or three, and the framework fixes every row at one height and titles columns that need no title."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Widgets need an application. Run alone, nothing else in this module has made one yet.
+        cls.app = QApplication.instance() or QApplication([])
+
+    def patched(self):
+        """Build a fresh stand-in class and patch it.
+
+        Returns:
+            The patched class.
+        """
+        info_table = importlib.import_module('src.info_table')
+        detail = type('Detail', (_Detail,), {})
+        info_table.patch(detail)
+        return detail
+
+    def test_the_column_titles_are_hidden(self):
+        detail = self.patched()()
+        self.assertTrue(detail.info_table.horizontalHeader().isHidden())
+
+    def test_a_wrapped_row_grows_and_a_short_one_keeps_the_framework_height(self):
+        detail = self.patched()()
+        detail.rows = [('Log', 'Global Daily complete.'), ('Crew Deck', 'Done in 03:05. ' + 'Tea Time: already done today, skipping it. ' * 6)]
+        detail._fill_info()
+        self.assertEqual(40, detail.info_table.rowHeight(0))
+        self.assertGreater(detail.info_table.rowHeight(1), 40)
+
+    def test_apply_twice_wraps_once(self):
+        info_table = importlib.import_module('src.info_table')
+        detail = self.patched()
+        fill = detail._fill_info
+        info_table.patch(detail)
+        self.assertIs(fill, detail._fill_info)
 
 
 class TestFlowIsolation(unittest.TestCase):
