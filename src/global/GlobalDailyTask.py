@@ -38,9 +38,9 @@ MAP_TITLE_BAND = (0.30, 0.03, 0.70, 0.14)
 SUPPLY_LINK = re.compile(r'Suppl(?:y|ies)', re.I)
 NOT_ENABLED = re.compile(r'Not\s*enabled', re.I)
 PART_NUMBER = re.compile(r'Part\s*(\d+)', re.I)
-# How far from a card's Supplies link its own title and lock notice may sit, as a fraction of frame width.
-# The cards sit at opposite ends of the page, two thirds of the frame apart, so a span wide enough to take
-# in a whole card still reaches nowhere near its neighbour.
+# How far across one column of cards its text may spread, as a fraction of frame width. Chiral's two cards
+# sit at opposite ends of the page, two thirds of the frame apart, so this takes in a whole card and never
+# its neighbour. Iliad also stacks two cards up the right side, and those are told apart by height.
 CARD_SPREAD = 0.25
 
 # Event tickets, in the top-right corner of the event page. Every event puts the count in the same spot
@@ -614,8 +614,9 @@ def pick_supplies_link(boxes, width):
     """Choose which part's Supply link to open, on an event page that splits its modes into parts.
 
     The later part is the one worth running, and a part that has not opened yet says "Not enabled" above its own title, so the pick is the highest
-    numbered part that does not. A card is grouped by how close its text sits, since the parts are drawn at opposite ends of the page. A card whose
-    number could not be read sorts below every numbered one and falls back on its position, which leaves a single-part event working without a case of its own.
+    numbered part that does not. Text belongs to the card whose title sits nearest it in the same column, since some events stack two cards up one
+    side of the page. A card whose number could not be read sorts below every numbered one and falls back on its position, which leaves a single-part
+    event working without a case of its own.
 
     Args:
         boxes: What OCR read across the part cards.
@@ -627,16 +628,21 @@ def pick_supplies_link(boxes, width):
     spread = width * CARD_SPREAD
     numbered = [(box, int(found.group(1))) for box in boxes if box.name and (found := PART_NUMBER.search(box.name))]
 
-    def near(box, link):
-        """Whether `box` sits close enough to `link` to be part of the same card."""
-        return abs(box.x - link.x) < spread
+    def near(box, other):
+        """Whether `box` and `other` sit in the same column of cards."""
+        return abs(box.x - other.x) < spread
+
+    def title_of(box):
+        """The title of `box`'s own card: the one nearest it in its column, or None when that column has none that could be read."""
+        return min((title for title, _ in numbered if near(title, box)), key=lambda title: abs(title.y - box.y), default=None)
 
     def part_of(link):
-        """The part number on `link`'s own card, or 0 when none of them could be read."""
-        return max((number for box, number in numbered if near(box, link)), default=0)
+        """The part number on `link`'s own card, or 0 when it could not be read."""
+        title = title_of(link)
+        return next((number for box, number in numbered if box is title), 0)
 
     locked = find_boxes_by_name(boxes, NOT_ENABLED)
-    open_links = [link for link in find_boxes_by_name(boxes, SUPPLY_LINK) if not any(near(box, link) for box in locked)]
+    open_links = [link for link in find_boxes_by_name(boxes, SUPPLY_LINK) if not any(near(lock, link) and title_of(lock) is title_of(link) for lock in locked)]
     if not open_links:
         return None
     return max(open_links, key=lambda link: (part_of(link), link.x))

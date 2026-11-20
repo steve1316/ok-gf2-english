@@ -1180,6 +1180,10 @@ class TestSuppliesLink(unittest.TestCase):
         """Iliad words its cards "Supply" where Chiral Redundancy said "Supplies"."""
         self.assertEqual(112, self.pick(self.iliad('1')).x)
 
+    def test_a_lock_on_the_card_below_does_not_close_the_open_card_above(self):
+        """Iliad stacks Part 1.5 over Part 2, so Part 2's lock sits right under Part 1.5's link, in the same column."""
+        self.assertEqual(1620, self.pick(self.iliad('1', '1.5')).x)
+
     def test_the_open_part_is_chosen_over_the_locked_one(self):
         """The page in the screenshots: Part 1 finished and open, Part 2 not enabled yet."""
         picked = self.pick(self.card(self.LEFT_CARD, 1) + self.card(self.RIGHT_CARD, 2, locked=True))
