@@ -223,7 +223,7 @@ def is_menu_label(name):
 
 
 def clock(seconds):
-    """Format a duration the way the framework's header clock does.
+    """Format a duration the way the framework's header clock does. Its `format_elapsed` lives in the Qt shell, which task code stays out of.
 
     Args:
         seconds: The duration. Negative values read as zero.
@@ -830,7 +830,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: The home screen was not reached, raised by the fallback.
         """
-        self.info_set('current_task', 'go_home')
         self.parked = False
         for _ in range(HOME_BUTTON_PRESSES):
             self.click_relative(*HOME_BUTTON, after_sleep=2)
@@ -933,18 +932,18 @@ class BaseGlobalTask(BaseGfTask):
         if self.flow_lines is not None:
             self.flow_lines.append(message)
 
-    def log_info(self, message, notify=False, *args, **kwargs):
-        """Log a line as the framework does, and keep it for the running flow's Info row when it is one the user is notified of.
+    def notification(self, message, *args, **kwargs):
+        """Raise a desktop notification as the framework does, and keep its line for the running flow's Info row.
+
+        Both `log_info` and `log_error` reach this when `notify` is set, so it is the one place to catch the lines the user is told about.
 
         Args:
-            message: The line to log.
-            notify: Whether to raise a desktop notification too. Only these lines reach the flow's row.
+            message: The notified line.
             *args: Passed to the framework.
             **kwargs: Passed to the framework.
         """
-        super().log_info(message, notify, *args, **kwargs)
-        if notify:
-            self.keep_flow_line(message)
+        super().notification(message, *args, **kwargs)
+        self.keep_flow_line(message)
 
     def info_set(self, key, value):
         """Set an Info row, except upstream's `current_task`, whose method names the flow rows already say in English.
@@ -966,9 +965,8 @@ class BaseGlobalTask(BaseGfTask):
 
         Only the first call stamps. The executor disables a task again once it is already off.
         """
-        started = getattr(self, 'start_time', 0)
-        if self.enabled and started:
-            self.info = {ELAPSED: clock(time.time() - started), **{key: value for key, value in self.info.items() if key != ELAPSED}}
+        if self.enabled and self.start_time:
+            self.info = {ELAPSED: clock(time.time() - self.start_time), **{key: value for key, value in self.info.items() if key != ELAPSED}}
         super().disable()
 
     def leave_parked_screen(self):
@@ -1018,7 +1016,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: The home screen was not reached within `time_out`.
         """
-        self.info_set('current_task', 'go_to_main')
         self.parked = False
         if not self.wait_until(lambda: self.is_main(recheck_time=recheck_time, esc=esc), time_out=time_out):
             raise Exception('Could not reach the game home screen. Start the bot from the home screen.')
@@ -1083,7 +1080,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: Timed out while `raise_if_not_found` is True.
         """
-        self.info_set('current_task', 'skip_dialogs')
         start = time.time()
         while time.time() - start < time_out:
             try:

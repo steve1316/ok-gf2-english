@@ -3356,9 +3356,9 @@ class TestInfoOverrides(unittest.TestCase):
     def test_a_notify_line_during_a_flow_is_kept(self):
         task = self.bare()
         task.flow_lines = []
-        with mock.patch.object(BaseTask, 'log_info'):
-            task.log_info('quiet line')
-            task.log_info('Water Flower: watered.', notify=True)
+        with mock.patch.object(BaseTask, 'notification') as framework:
+            task.notification('Water Flower: watered.', tray=True)
+        framework.assert_called_once_with('Water Flower: watered.', tray=True)
         self.assertEqual(['Water Flower: watered.'], task.flow_lines)
 
 
@@ -3451,6 +3451,7 @@ class TestInfoTable(unittest.TestCase):
 
     def test_the_column_titles_are_hidden(self):
         detail = self.patched()()
+        detail._fill_info()
         self.assertTrue(detail.info_table.horizontalHeader().isHidden())
 
     def test_a_wrapped_row_grows_and_a_short_one_keeps_the_framework_height(self):

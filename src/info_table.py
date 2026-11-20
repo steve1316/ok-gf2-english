@@ -17,26 +17,10 @@ MARKER = '_ok_gf2_info_table'
 MIN_ROW_HEIGHT = 40
 
 
-def _headless(original):
-    """Wrap `TaskDetail.__init__` to hide the Info table's column titles.
-
-    Args:
-        original: The `__init__` being replaced.
-
-    Returns:
-        The replacement.
-    """
-
-    @functools.wraps(original)
-    def init(self, *args, **kwargs):
-        original(self, *args, **kwargs)
-        self.info_table.horizontalHeader().hide()
-
-    return init
-
-
 def _fitting(original):
-    """Wrap `TaskDetail._fill_info` so each row grows to fit its wrapped text, never shrinking below the framework's height.
+    """Wrap `TaskDetail._fill_info` to hide the column titles and grow each row to fit its wrapped text, never below the framework's height.
+
+    The framework fills the table whenever it is shown, so the titles are gone before it is ever seen.
 
     Args:
         original: The `_fill_info` being replaced.
@@ -49,6 +33,7 @@ def _fitting(original):
     def fill_info(self, *args, **kwargs):
         original(self, *args, **kwargs)
         table = self.info_table
+        table.horizontalHeader().hide()
         for row in range(table.rowCount()):
             table.setRowHeight(row, max(MIN_ROW_HEIGHT, table.sizeHintForRow(row)))
 
@@ -63,7 +48,6 @@ def patch(task_detail):
     """
     if MARKER in task_detail.__dict__:
         return
-    task_detail.__init__ = _headless(task_detail.__init__)
     task_detail._fill_info = _fitting(task_detail._fill_info)
     setattr(task_detail, MARKER, True)
 
