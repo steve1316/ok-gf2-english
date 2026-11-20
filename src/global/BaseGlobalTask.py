@@ -174,6 +174,22 @@ CURSOR_RESTORE_INTERVAL = 0.5
 # before it can be looked at, which is exactly what happened to the first one saved here.
 DUMP_FOLDER = 'debug_frames'
 
+# What a flow's Info row reads before and while it runs. Every flow gets its row at Start, so the table is its full height from the first frame and a
+# finished run still shows which flows never got a turn.
+WAITING = 'Waiting'
+RUNNING = 'Running'
+OFF = 'Off'
+# How a flow ended, first word of its row. Ended early is `stop_flow` - a reason was given, which may be nothing to do rather than a problem.
+DONE = 'Done'
+ENDED_EARLY = 'Ended early'
+FAILED = 'Failed'
+STOPPED = 'Stopped'
+# The framework's own rows: the last logged line, and the method name upstream's tasks write. The flow rows say the latter in English already.
+LOG = 'Log'
+CURRENT_TASK = 'current_task'
+# What the Log row holds until the first line is logged, so it is seeded above the flow rows rather than appended below them.
+UNREAD = '-'
+
 
 def first_counter(name):
     """Read the first "n of m" counter out of a piece of text.
@@ -204,6 +220,36 @@ def is_menu_label(name):
     return len(name) <= MAX_MENU_LABEL and not any(character in name for character in ',.')
 
 
+def clock(seconds):
+    """Format a duration the way the framework's header clock does.
+
+    Args:
+        seconds: The duration. Negative values read as zero.
+
+    Returns:
+        `mm:ss`, or `h:mm:ss` from one hour.
+    """
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f'{hours}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:02d}:{seconds:02d}'
+
+
+def sentence(line):
+    """Give a log line the capital and full stop it needs to sit beside others in one Info row.
+
+    Args:
+        line: A logged line, which may start lowercase or end without punctuation.
+
+    Returns:
+        The line with its first letter upper-cased and a full stop added when it ends without one.
+    """
+    line = line.strip()
+    if not line:
+        return line
+    line = line[0].upper() + line[1:]
+    return line if line[-1] in '.!?' else line + '.'
+
+
 class BaseGlobalTask(BaseGfTask):
     """Base for tasks that drive the Global (English) client.
 
@@ -216,6 +262,13 @@ class BaseGlobalTask(BaseGfTask):
     # a look at the screen, because the answer is already known and a look costs an OCR pass and two template
     # matches on every run of every task, including the ones where no flow can park at all.
     parked = False
+
+    # The desktop-notification lines logged by the flow that is running, for its Info row. None between flows, so a run's own closing line is not
+    # credited to whichever flow ran last.
+    flow_lines = None
+
+    # Whether the running flow gave up through `stop_flow`, which makes its row read Ended early rather than Done.
+    flow_ended_early = False
 
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -814,13 +867,17 @@ class BaseGlobalTask(BaseGfTask):
             flows: The module's `FLOWS` table.
             label: What this run is called, for the line saying it is over.
         """
+        if LOG not in self.info:
+            self.info_set(LOG, UNREAD)
+        for key, _, _ in flows:
+            self.info_set(key, WAITING if self.config.get(key) else OFF)
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
         failed = []
         for key, method, _ in flows:
             if not self.config.get(key):
                 continue
             try:
-                getattr(self, method)()
+                self.run_flow(key, method)
             except STOP_THE_RUN:
                 raise
             except Exception as error:
@@ -833,6 +890,69 @@ class BaseGlobalTask(BaseGfTask):
         self.leave_parked_screen()
         ending = f'finished, but these stopped early: {", ".join(failed)}.' if failed else 'complete.'
         self.log_info(f'{label} {ending}', notify=True)
+
+    def run_flow(self, key, method):
+        """Run one flow and keep its Info row up to date: Running while it goes, then how it ended, how long it took, and what it reported.
+
+        Args:
+            key: The flow's toggle name, which is also its row's name.
+            method: The name of the method that performs it.
+
+        Raises:
+            Exception: Whatever the flow raised, once its row says so. `run_flows` steps over it, a single-flow task lets it reach the executor.
+        """
+        self.info_set(key, RUNNING)
+        self.flow_lines = []
+        self.flow_ended_early = False
+        started = time.monotonic()
+        status = DONE
+        try:
+            getattr(self, method)()
+            if self.flow_ended_early:
+                status = ENDED_EARLY
+        except STOP_THE_RUN:
+            status = STOPPED
+            raise
+        except Exception as error:
+            status = FAILED
+            self.flow_lines.append(str(error.args[0]) if error.args else str(error))
+            raise
+        finally:
+            lines = ' '.join(dict.fromkeys(filter(None, map(sentence, self.flow_lines))))
+            self.flow_lines = None
+            self.info_set(key, f'{status} in {clock(time.monotonic() - started)}.' + (f' {lines}' if lines else ''))
+
+    def keep_flow_line(self, message):
+        """Keep a desktop-notification line for the running flow's Info row. Does nothing between flows.
+
+        Args:
+            message: The line as logged.
+        """
+        if self.flow_lines is not None:
+            self.flow_lines.append(message)
+
+    def log_info(self, message, notify=False, *args, **kwargs):
+        """Log a line as the framework does, and keep it for the running flow's Info row when it is one the user is notified of.
+
+        Args:
+            message: The line to log.
+            notify: Whether to raise a desktop notification too. Only these lines reach the flow's row.
+            *args: Passed to the framework.
+            **kwargs: Passed to the framework.
+        """
+        super().log_info(message, notify, *args, **kwargs)
+        if notify:
+            self.keep_flow_line(message)
+
+    def info_set(self, key, value):
+        """Set an Info row, except upstream's `current_task`, whose method names the flow rows already say in English.
+
+        Args:
+            key: The row's name.
+            value: What it shows.
+        """
+        if key != CURRENT_TASK:
+            super().info_set(key, value)
 
     def leave_parked_screen(self):
         """Return to the home screen if the last flow deliberately stopped somewhere else.
@@ -860,6 +980,7 @@ class BaseGlobalTask(BaseGfTask):
         Returns:
             False, so a caller can `return self.stop_flow(...)` in one line.
         """
+        self.flow_ended_early = True
         self.log_info(message, notify=True)
         if dump:
             self.dump_screen(dump)
