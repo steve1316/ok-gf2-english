@@ -5,6 +5,7 @@ import os
 import re
 import runpy
 import tempfile
+import time
 import types
 import unittest
 
@@ -3351,6 +3352,56 @@ class TestInfoOverrides(unittest.TestCase):
             task.log_info('quiet line')
             task.log_info('Water Flower: watered.', notify=True)
         self.assertEqual(['Water Flower: watered.'], task.flow_lines)
+
+
+class TestElapsedRow(unittest.TestCase):
+    """The header's live clock goes when the run stops, so the run leaves its time as the top Info row."""
+
+    def bare(self, enabled=True, started=0.0):
+        """Build a `BaseGlobalTask` without its framework setup.
+
+        Args:
+            enabled: Whether the task is still enabled when `disable` is called.
+            started: The run's `start_time`, 0 for a task that never started.
+
+        Returns:
+            The bare task, holding one Log row.
+        """
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = object.__new__(base.BaseGlobalTask)
+        task._enabled = enabled
+        task.start_time = started
+        task.info = {'Log': 'Global Daily complete.'}
+        return task
+
+    def test_a_run_that_ends_puts_its_time_first(self):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = self.bare(started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'disable') as framework:
+            task.disable()
+        framework.assert_called_once()
+        self.assertEqual(['Time Elapsed', 'Log'], list(task.info))
+        self.assertIn(task.info['Time Elapsed'], (base.clock(65), base.clock(66)))
+
+    def test_a_task_that_never_started_gets_no_time(self):
+        task = self.bare(started=0)
+        with mock.patch.object(BaseTask, 'disable'):
+            task.disable()
+        self.assertNotIn('Time Elapsed', task.info)
+
+    def test_a_second_disable_does_not_restamp(self):
+        """The executor disables a task again once it is already off, and the time should stay the one taken when it stopped."""
+        task = self.bare(enabled=False, started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'disable'):
+            task.disable()
+        self.assertNotIn('Time Elapsed', task.info)
+
+    def test_clearing_the_table_forgets_the_last_start(self):
+        """Otherwise a task queued and stopped before it ran would stamp the last run's start."""
+        task = self.bare(started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'info_clear'):
+            task.info_clear()
+        self.assertEqual(0, task.start_time)
 
 
 class TestFlowIsolation(unittest.TestCase):

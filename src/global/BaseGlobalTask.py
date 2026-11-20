@@ -189,6 +189,8 @@ LOG = 'Log'
 CURRENT_TASK = 'current_task'
 # What the Log row holds until the first line is logged, so it is seeded above the flow rows rather than appended below them.
 UNREAD = '-'
+# How long the last run took, drawn at the top once it ends. The header shows the live clock while a run is going, and drops it the moment it stops.
+ELAPSED = 'Time Elapsed'
 
 
 def first_counter(name):
@@ -953,6 +955,21 @@ class BaseGlobalTask(BaseGfTask):
         """
         if key != CURRENT_TASK:
             super().info_set(key, value)
+
+    def info_clear(self):
+        """Clear the Info rows for a new run, and forget the last run's start so a task stopped while still queued has no time to stamp."""
+        super().info_clear()
+        self.start_time = 0
+
+    def disable(self):
+        """Stop the task, leaving the run's time as the top Info row whether it finished, was stopped, or crashed.
+
+        Only the first call stamps. The executor disables a task again once it is already off.
+        """
+        started = getattr(self, 'start_time', 0)
+        if self.enabled and started:
+            self.info = {ELAPSED: clock(time.time() - started), **{key: value for key, value in self.info.items() if key != ELAPSED}}
+        super().disable()
 
     def leave_parked_screen(self):
         """Return to the home screen if the last flow deliberately stopped somewhere else.
