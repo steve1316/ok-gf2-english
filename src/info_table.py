@@ -13,9 +13,6 @@ logger = Logger.get_logger(__name__)
 # Set on the detail class once it has been wrapped, so a second `apply` cannot nest wrappers.
 MARKER = '_ok_gf2_info_table'
 
-# The framework's own row height. A one-line row keeps it, so only rows with more to say grow.
-MIN_ROW_HEIGHT = 40
-
 
 def _fitting(original):
     """Wrap `TaskDetail._fill_info` to hide the column titles and grow each row to fit its wrapped text, never below the framework's height.
@@ -34,8 +31,10 @@ def _fitting(original):
         original(self, *args, **kwargs)
         table = self.info_table
         table.horizontalHeader().hide()
+        # The framework's own row height. A one-line row keeps it, so only rows with more to say grow.
+        floor = table.verticalHeader().defaultSectionSize()
         for row in range(table.rowCount()):
-            table.setRowHeight(row, max(MIN_ROW_HEIGHT, table.sizeHintForRow(row)))
+            table.setRowHeight(row, max(floor, table.sizeHintForRow(row)))
 
     return fill_info
 
