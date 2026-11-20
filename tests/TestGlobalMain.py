@@ -5,6 +5,7 @@ import os
 import re
 import runpy
 import tempfile
+import time
 import types
 import unittest
 
@@ -17,7 +18,7 @@ from unittest import mock
 from ok import Box, find_boxes_by_name, relative_box
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QPalette
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QTableWidget, QTableWidgetItem, QWidget
 from ok.task.task import OCR, BaseTask, ExecutorOperation
 from ok.ui.qt.common.config import Language
 from ok.ui.qt.kit.dialogs import Dialog
@@ -1709,6 +1710,14 @@ class TestRegionExtras(unittest.TestCase):
                 self.applied(region_name)
                 self.assertEqual(applies, apply.called)
 
+    def test_info_table_changes_only_apply_on_global(self):
+        """CN's tasks write upstream's own Info rows, which were laid out for the framework's table."""
+        region = importlib.import_module('src.region')
+        for region_name, applies in (('Global', True), ('CN', False)):
+            with self.subTest(region_name), mock.patch.object(region.info_table, 'apply') as apply:
+                self.applied(region_name)
+                self.assertEqual(applies, apply.called)
+
     def test_upstreams_tabs_are_dropped_in_either_region(self):
         """Both are built on `ok.gui` and qfluentwidgets, which ok-script 3 removed, so registering either crashes the app at startup."""
         for region_name in ('Global', 'CN'):
@@ -3168,8 +3177,13 @@ class _Flows:
     """A stand-in task for `run_flows`, scripted with which flows raise, which park, and which toggles are off."""
 
     leave_parked_screen = BaseGlobalTask.leave_parked_screen
+    run_flow = BaseGlobalTask.run_flow
+    stop_flow = BaseGlobalTask.stop_flow
+    keep_flow_line = BaseGlobalTask.keep_flow_line
+    flow_lines = None
+    flow_ended_early = False
 
-    def __init__(self, raises=None, off=(), at_home=False, parks=(), homes=()):
+    def __init__(self, raises=None, off=(), at_home=False, parks=(), homes=(), stops=None, notes=None):
         """Build the stand-in.
 
         Args:
@@ -3178,8 +3192,13 @@ class _Flows:
             at_home: Whether the home screen is showing when a flow raises.
             parks: Config keys whose flow stops early on a screen it means to leave up for the flow behind it.
             homes: Config keys whose flow ends by going home, as every ordinary ending does.
+            stops: Config key to the `stop_flow` reasons that flow gives, in order.
+            notes: Config key to the notify lines that flow logs, in order.
         """
         self.raises = raises or {}
+        self.stops = stops or {}
+        self.notes = notes or {}
+        self.info = {}
         self.config = {key: key not in off for key, _, _ in ISOLATION_FLOWS}
         self.at_home = at_home
         self.parks = parks
@@ -3209,6 +3228,10 @@ class _Flows:
             Exception: Whatever `raises` holds for this flow.
         """
         self.ran.append(key)
+        for note in self.notes.get(key, ()):
+            self.log_info(note, notify=True)
+        for reason in self.stops.get(key, ()):
+            self.stop_flow(reason)
         if key in self.homes:
             self.go_home()
         if key in self.parks:
@@ -3226,11 +3249,243 @@ class _Flows:
         self.recovered += 1
         self.parked = False
 
+    def dump_screen(self, label):
+        pass
+
+    def info_set(self, key, value):
+        self.info[key] = value
+
     def log_info(self, message, notify=False):
         self.logged.append(message)
+        if notify:
+            self.keep_flow_line(message)
 
     def log_error(self, message, exception=None, notify=False):
         self.errors.append(message)
+
+
+class TestFlowRows(unittest.TestCase):
+    """The Info tab gets one row per flow, so a finished run says which flows did what without reading the log."""
+
+    def run_flows(self, task):
+        """Run `ISOLATION_FLOWS` against a stand-in task.
+
+        Args:
+            task: The `_Flows` stand-in to run.
+        """
+        BaseGlobalTask.run_flows(task, ISOLATION_FLOWS, 'Test run')
+
+    def test_every_flow_gets_a_row_in_table_order(self):
+        task = _Flows()
+        self.run_flows(task)
+        self.assertEqual(['Log', 'One', 'Two', 'Three'], list(task.info))
+
+    def test_a_switched_off_flow_reads_off(self):
+        task = _Flows(off=('Two',))
+        self.run_flows(task)
+        self.assertEqual('Off', task.info['Two'])
+
+    def test_a_clean_flow_reads_done_with_its_time(self):
+        task = _Flows()
+        self.run_flows(task)
+        self.assertRegex(task.info['One'], r'^Done in \d\d:\d\d\.$')
+
+    def test_a_flow_that_raises_reads_failed_with_the_error(self):
+        task = _Flows(raises={'Two': Exception('boom')})
+        self.run_flows(task)
+        self.assertTrue(task.info['Two'].startswith('Failed in '), task.info['Two'])
+        self.assertIn('Boom.', task.info['Two'])
+
+    def test_a_stopped_flow_ended_early_with_every_reason(self):
+        """Event Supply stops once per banner slot, and the second slot's reason should not wipe out the first's."""
+        task = _Flows(stops={'One': ['No event banner in slot 1, skipping.', 'no event tickets left']})
+        self.run_flows(task)
+        self.assertRegex(task.info['One'], r'^Ended early in \d\d:\d\d\. No event banner in slot 1, skipping\. No event tickets left\.$')
+
+    def test_notify_lines_ride_along_with_done(self):
+        task = _Flows(notes={'One': ['Water Flower: watered.']})
+        self.run_flows(task)
+        self.assertRegex(task.info['One'], r'^Done in \d\d:\d\d\. Water Flower: watered\.$')
+
+    def test_a_repeated_line_shows_once(self):
+        task = _Flows(notes={'One': ['Tea Time: done.', 'Tea Time: done.']})
+        self.run_flows(task)
+        self.assertEqual(1, task.info['One'].count('Tea Time'))
+
+    def test_the_runs_closing_line_lands_on_no_flow(self):
+        task = _Flows(raises={'Three': Exception('boom')})
+        self.run_flows(task)
+        self.assertFalse(any('Test run' in task.info[key] for key in ('One', 'Two', 'Three')))
+        self.assertIsNone(task.flow_lines, 'lines logged after the last flow would otherwise still be collected')
+
+    def test_a_stop_request_marks_the_running_flow_stopped(self):
+        """Pressing Stop ends the run, and the flow it interrupted should not be left reading Running forever."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = _Flows(raises={'One': base.STOP_THE_RUN[0]('stopped')})
+        with self.assertRaises(base.STOP_THE_RUN[0]):
+            self.run_flows(task)
+        self.assertTrue(task.info['One'].startswith('Stopped in '), task.info['One'])
+        self.assertEqual('Waiting', task.info['Two'])
+
+    def test_a_lost_capture_reads_failed_with_its_reason(self):
+        """The game window going away ends the run too, but the user did not press Stop, so the row should not say they did."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = _Flows(raises={'One': base.CaptureException('the game window is gone')})
+        with self.assertRaises(base.CaptureException):
+            self.run_flows(task)
+        self.assertRegex(task.info['One'], r'^Failed in \d\d:\d\d\. The game window is gone\.$')
+
+    def test_an_error_with_no_message_still_says_what_it_was(self):
+        task = _Flows(raises={'Two': KeyError()})
+        self.run_flows(task)
+        self.assertRegex(task.info['Two'], r'^Failed in \d\d:\d\d\. KeyError\.$')
+
+
+class TestClock(unittest.TestCase):
+    """Flow and run times read like the header's own clock."""
+
+    def test_it_reads_like_the_header(self):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        self.assertEqual('01:05', base.clock(65))
+        self.assertEqual('1:02:05', base.clock(3725))
+        self.assertEqual('00:00', base.clock(-1))
+
+
+class TestInfoOverrides(unittest.TestCase):
+    """`BaseGlobalTask`'s own `log_info` and `info_set`, run on a bare instance with the framework's versions patched out."""
+
+    def bare(self):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        return object.__new__(base.BaseGlobalTask)
+
+    def test_current_task_is_not_drawn(self):
+        """It shows a method name, and the flow's Running row already says the same thing in English."""
+        task = self.bare()
+        with mock.patch.object(BaseTask, 'info_set') as framework:
+            task.info_set('current_task', 'run_event_supply')
+            task.info_set('Log', 'hello')
+        framework.assert_called_once_with('Log', 'hello')
+
+    def test_a_notify_line_during_a_flow_is_kept(self):
+        task = self.bare()
+        task.flow_lines = []
+        with mock.patch.object(BaseTask, 'notification') as framework:
+            task.notification('Water Flower: watered.', tray=True)
+        framework.assert_called_once_with('Water Flower: watered.', tray=True)
+        self.assertEqual(['Water Flower: watered.'], task.flow_lines)
+
+
+class TestElapsedRow(unittest.TestCase):
+    """The header's live clock goes when the run stops, so the run leaves its time as the top Info row."""
+
+    def bare(self, enabled=True, started=0.0):
+        """Build a `BaseGlobalTask` without its framework setup.
+
+        Args:
+            enabled: Whether the task is still enabled when `disable` is called.
+            started: The run's `start_time`, 0 for a task that never started.
+
+        Returns:
+            The bare task, holding one Log row.
+        """
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = object.__new__(base.BaseGlobalTask)
+        task._enabled = enabled
+        task.start_time = started
+        task.info = {'Log': 'Global Daily complete.'}
+        return task
+
+    def test_a_run_that_ends_puts_its_time_first(self):
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = self.bare(started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'disable') as framework:
+            task.disable()
+        framework.assert_called_once()
+        self.assertEqual(['Time Elapsed', 'Log'], list(task.info))
+        self.assertIn(task.info['Time Elapsed'], (base.clock(65), base.clock(66)))
+
+    def test_a_task_that_never_started_gets_no_time(self):
+        task = self.bare(started=0)
+        with mock.patch.object(BaseTask, 'disable'):
+            task.disable()
+        self.assertNotIn('Time Elapsed', task.info)
+
+    def test_a_second_disable_does_not_restamp(self):
+        """The executor disables a task again once it is already off, and the time should stay the one taken when it stopped."""
+        task = self.bare(enabled=False, started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'disable'):
+            task.disable()
+        self.assertNotIn('Time Elapsed', task.info)
+
+    def test_clearing_the_table_forgets_the_last_start(self):
+        """Otherwise a task queued and stopped before it ran would stamp the last run's start."""
+        task = self.bare(started=time.time() - 65)
+        with mock.patch.object(BaseTask, 'info_clear'):
+            task.info_clear()
+        self.assertEqual(0, task.start_time)
+
+
+class _Detail:
+    """A stand-in for the framework's `TaskDetail`: an Info table built the way the framework builds it, and a `_fill_info` that writes `rows` into it."""
+
+    def __init__(self):
+        self.rows = []
+        self.info_table = QTableWidget(0, 2)
+        self.info_table.verticalHeader().setDefaultSectionSize(40)
+        self.info_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.info_table.horizontalHeader().setStretchLastSection(True)
+        self.info_table.resize(600, 400)
+
+    def _fill_info(self):
+        self.info_table.setRowCount(len(self.rows))
+        for row, (key, value) in enumerate(self.rows):
+            self.info_table.setItem(row, 0, QTableWidgetItem(key))
+            self.info_table.setItem(row, 1, QTableWidgetItem(value))
+
+
+class TestInfoTable(unittest.TestCase):
+    """The flow rows carry a sentence or three, and the framework fixes every row at one height and titles columns that need no title."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Widgets need an application. Run alone, nothing else in this module has made one yet.
+        cls.app = QApplication.instance() or QApplication([])
+
+    def patched(self):
+        """Build a fresh stand-in class and patch it.
+
+        Returns:
+            The patched class.
+        """
+        info_table = importlib.import_module('src.info_table')
+        detail = type('Detail', (_Detail,), {})
+        info_table.patch(detail)
+        return detail
+
+    def test_the_column_titles_are_hidden(self):
+        detail = self.patched()()
+        detail._fill_info()
+        self.assertTrue(detail.info_table.horizontalHeader().isHidden())
+
+    def test_a_wrapped_row_grows_and_a_short_one_keeps_the_framework_height(self):
+        detail = self.patched()()
+        detail.rows = [('Log', 'Global Daily complete.'), ('Crew Deck', 'Done in 03:05. ' + 'Tea Time: already done today, skipping it. ' * 6)]
+        detail._fill_info()
+        self.assertEqual(40, detail.info_table.rowHeight(0))
+        self.assertGreater(detail.info_table.rowHeight(1), 40)
+
+    def test_a_framework_that_renamed_fill_info_still_starts(self):
+        """The patch is a nicety, so a framework update that moves `_fill_info` should cost the tidy table, not the app."""
+        info_table = importlib.import_module('src.info_table')
+        with mock.patch('ok.ui.qt.tasks.tasks_page.TaskDetail', type('Moved', (), {})):
+            info_table.apply()
+
+    def test_apply_twice_wraps_once(self):
+        info_table = importlib.import_module('src.info_table')
+        detail = self.patched()
+        fill = detail._fill_info
+        info_table.patch(detail)
+        self.assertIs(fill, detail._fill_info)
 
 
 class TestFlowIsolation(unittest.TestCase):

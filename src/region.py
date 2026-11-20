@@ -2,7 +2,7 @@ import importlib
 
 from ok import ConfigOption, Logger
 from ok.util.file import get_relative_path, read_json_file
-from src import link_colour, start_lock, task_tabs
+from src import info_table, link_colour, start_lock, task_tabs
 from src.task_icons import ORANGE, TEAL, two_tone
 
 logger = Logger.get_logger(__name__)
@@ -200,6 +200,7 @@ def apply_region(config):
     _hide_tasks(cn_tasks)
     _move_diagnosis_to_checks()
     task_tabs.apply(GLOBAL_CHECKS_GROUP)
+    info_table.apply()
     config["task_category_icons"] = {"all": ALL_TAB_ICON}
     # A registered trigger task can still run in the background, so hiding would not be enough.
     config["trigger_tasks"] = [entry for entry in config.get("trigger_tasks", []) if not entry[0].startswith(CN_TASK_PREFIX)]

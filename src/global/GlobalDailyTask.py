@@ -780,7 +780,7 @@ class GlobalDailyTask(BaseGlobalTask):
             # reading before giving up - it is where the daily box used to be claimed from.
             self.log_info('Could not open the Quality Selection category, claiming from the page the shop is on instead.')
             claimed += self.claim_free_boxes()
-        self.log_info(f'claimed {claimed} free supply box(es)')
+        self.log_info(f'claimed {claimed} free supply box(es)', notify=True)
         self.go_home()
 
     def tab_has_badge(self, label, tab):

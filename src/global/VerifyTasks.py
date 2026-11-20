@@ -75,7 +75,7 @@ class _SingleFlow:
         tasks exist to show a failure rather than absorb it - the raise has to reach the executor, which is what puts the error and its screenshot on screen.
         """
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
-        getattr(self, self.flow)()
+        self.run_flow(self.name, self.flow)
         # A flow that stopped early may have parked on a screen for a flow behind it, and here there is none.
         self.leave_parked_screen()
         self.log_info(f'{self.name} finished.', notify=True)

@@ -15,6 +15,9 @@ from src.core.BaseGfTask import BaseGfTask
 # move on to, so they go straight up to the executor, which is where the framework already sorts them out.
 STOP_THE_RUN = (TaskDisabledException, FinishedException, CaptureException)
 
+# The part of `STOP_THE_RUN` the user asked for. A lost game window ends the run as well, but its flow row reads Failed with the reason, not Stopped.
+STOPPED_BY_USER = (TaskDisabledException, FinishedException)
+
 # Shared on-screen vocabulary. Every pattern here is compiled with re.I, so no pattern needs its own
 # character classes for case. Anything referenced by more than one module in this package belongs here
 # rather than being restated, because the Global client does rename labels - Public Area became Crew Deck.
@@ -174,6 +177,24 @@ CURSOR_RESTORE_INTERVAL = 0.5
 # before it can be looked at, which is exactly what happened to the first one saved here.
 DUMP_FOLDER = 'debug_frames'
 
+# What a flow's Info row reads before and while it runs. Every flow gets its row at Start, so the table is its full height from the first frame and a
+# finished run still shows which flows never got a turn.
+WAITING = 'Waiting'
+RUNNING = 'Running'
+OFF = 'Off'
+# How a flow ended, first word of its row. Ended early is `stop_flow` - a reason was given, which may be nothing to do rather than a problem.
+DONE = 'Done'
+ENDED_EARLY = 'Ended early'
+FAILED = 'Failed'
+STOPPED = 'Stopped'
+# The framework's own rows: the last logged line, and the method name upstream's tasks write. The flow rows say the latter in English already.
+LOG = 'Log'
+CURRENT_TASK = 'current_task'
+# What the Log row holds until the first line is logged, so it is seeded above the flow rows rather than appended below them.
+UNREAD = '-'
+# How long the last run took, drawn at the top once it ends. The header shows the live clock while a run is going, and drops it the moment it stops.
+ELAPSED = 'Time Elapsed'
+
 
 def first_counter(name):
     """Read the first "n of m" counter out of a piece of text.
@@ -204,6 +225,36 @@ def is_menu_label(name):
     return len(name) <= MAX_MENU_LABEL and not any(character in name for character in ',.')
 
 
+def clock(seconds):
+    """Format a duration the way the framework's header clock does. Its `format_elapsed` lives in the Qt shell, which task code stays out of.
+
+    Args:
+        seconds: The duration. Negative values read as zero.
+
+    Returns:
+        `mm:ss`, or `h:mm:ss` from one hour.
+    """
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f'{hours}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:02d}:{seconds:02d}'
+
+
+def sentence(line):
+    """Give a log line the capital and full stop it needs to sit beside others in one Info row.
+
+    Args:
+        line: A logged line, which may start lowercase or end without punctuation.
+
+    Returns:
+        The line with its first letter upper-cased and a full stop added when it ends without one.
+    """
+    line = line.strip()
+    if not line:
+        return line
+    line = line[0].upper() + line[1:]
+    return line if line[-1] in '.!?' else line + '.'
+
+
 class BaseGlobalTask(BaseGfTask):
     """Base for tasks that drive the Global (English) client.
 
@@ -216,6 +267,13 @@ class BaseGlobalTask(BaseGfTask):
     # a look at the screen, because the answer is already known and a look costs an OCR pass and two template
     # matches on every run of every task, including the ones where no flow can park at all.
     parked = False
+
+    # The desktop-notification lines logged by the flow that is running, for its Info row. None between flows, so a run's own closing line is not
+    # credited to whichever flow ran last.
+    flow_lines = None
+
+    # Whether the running flow gave up through `stop_flow`, which makes its row read Ended early rather than Done.
+    flow_ended_early = False
 
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -775,7 +833,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: The home screen was not reached, raised by the fallback.
         """
-        self.info_set('current_task', 'go_home')
         self.parked = False
         for _ in range(HOME_BUTTON_PRESSES):
             self.click_relative(*HOME_BUTTON, after_sleep=2)
@@ -814,13 +871,17 @@ class BaseGlobalTask(BaseGfTask):
             flows: The module's `FLOWS` table.
             label: What this run is called, for the line saying it is over.
         """
+        if LOG not in self.info:
+            self.info_set(LOG, UNREAD)
+        for key, _, _ in flows:
+            self.info_set(key, WAITING if self.config.get(key) else OFF)
         self.ensure_main(recheck_time=START_RECHECK, time_out=START_TIME_OUT)
         failed = []
         for key, method, _ in flows:
             if not self.config.get(key):
                 continue
             try:
-                getattr(self, method)()
+                self.run_flow(key, method)
             except STOP_THE_RUN:
                 raise
             except Exception as error:
@@ -833,6 +894,83 @@ class BaseGlobalTask(BaseGfTask):
         self.leave_parked_screen()
         ending = f'finished, but these stopped early: {", ".join(failed)}.' if failed else 'complete.'
         self.log_info(f'{label} {ending}', notify=True)
+
+    def run_flow(self, key, method):
+        """Run one flow and keep its Info row up to date: Running while it goes, then how it ended, how long it took, and what it reported.
+
+        Args:
+            key: The flow's toggle name, which is also its row's name.
+            method: The name of the method that performs it.
+
+        Raises:
+            Exception: Whatever the flow raised, once its row says so. `run_flows` steps over it, a single-flow task lets it reach the executor.
+        """
+        self.info_set(key, RUNNING)
+        self.flow_lines = []
+        self.flow_ended_early = False
+        started = time.monotonic()
+        status = DONE
+        try:
+            getattr(self, method)()
+            if self.flow_ended_early:
+                status = ENDED_EARLY
+        except STOPPED_BY_USER:
+            status = STOPPED
+            raise
+        except Exception as error:
+            status = FAILED
+            self.flow_lines.append((str(error.args[0]) if error.args else '') or type(error).__name__)
+            raise
+        finally:
+            lines = ' '.join(dict.fromkeys(filter(None, map(sentence, self.flow_lines))))
+            self.flow_lines = None
+            self.info_set(key, f'{status} in {clock(time.monotonic() - started)}.' + (f' {lines}' if lines else ''))
+
+    def keep_flow_line(self, message):
+        """Keep a desktop-notification line for the running flow's Info row. Does nothing between flows.
+
+        Args:
+            message: The line as logged.
+        """
+        if self.flow_lines is not None:
+            self.flow_lines.append(message)
+
+    def notification(self, message, *args, **kwargs):
+        """Raise a desktop notification as the framework does, and keep its line for the running flow's Info row.
+
+        Both `log_info` and `log_error` reach this when `notify` is set, so it is the one place to catch the lines the user is told about.
+
+        Args:
+            message: The notified line.
+            *args: Passed to the framework.
+            **kwargs: Passed to the framework.
+        """
+        super().notification(message, *args, **kwargs)
+        self.keep_flow_line(message)
+
+    def info_set(self, key, value):
+        """Set an Info row, except upstream's `current_task`, whose method names the flow rows already say in English.
+
+        Args:
+            key: The row's name.
+            value: What it shows.
+        """
+        if key != CURRENT_TASK:
+            super().info_set(key, value)
+
+    def info_clear(self):
+        """Clear the Info rows for a new run, and forget the last run's start so a task stopped while still queued has no time to stamp."""
+        super().info_clear()
+        self.start_time = 0
+
+    def disable(self):
+        """Stop the task, leaving the run's time as the top Info row whether it finished, was stopped, or crashed.
+
+        Only the first call stamps. The executor disables a task again once it is already off.
+        """
+        if self.enabled and self.start_time:
+            self.info = {ELAPSED: clock(time.time() - self.start_time), **{key: value for key, value in self.info.items() if key != ELAPSED}}
+        super().disable()
 
     def leave_parked_screen(self):
         """Return to the home screen if the last flow deliberately stopped somewhere else.
@@ -860,6 +998,7 @@ class BaseGlobalTask(BaseGfTask):
         Returns:
             False, so a caller can `return self.stop_flow(...)` in one line.
         """
+        self.flow_ended_early = True
         self.log_info(message, notify=True)
         if dump:
             self.dump_screen(dump)
@@ -880,7 +1019,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: The home screen was not reached within `time_out`.
         """
-        self.info_set('current_task', 'go_to_main')
         self.parked = False
         if not self.wait_until(lambda: self.is_main(recheck_time=recheck_time, esc=esc), time_out=time_out):
             raise Exception('Could not reach the game home screen. Start the bot from the home screen.')
@@ -945,7 +1083,6 @@ class BaseGlobalTask(BaseGfTask):
         Raises:
             Exception: Timed out while `raise_if_not_found` is True.
         """
-        self.info_set('current_task', 'skip_dialogs')
         start = time.time()
         while time.time() - start < time_out:
             try:
