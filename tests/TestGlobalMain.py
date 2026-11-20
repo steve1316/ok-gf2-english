@@ -3327,6 +3327,19 @@ class TestFlowRows(unittest.TestCase):
         self.assertTrue(task.info['One'].startswith('Stopped in '), task.info['One'])
         self.assertEqual('Waiting', task.info['Two'])
 
+    def test_a_lost_capture_reads_failed_with_its_reason(self):
+        """The game window going away ends the run too, but the user did not press Stop, so the row should not say they did."""
+        base = importlib.import_module('src.global.BaseGlobalTask')
+        task = _Flows(raises={'One': base.CaptureException('the game window is gone')})
+        with self.assertRaises(base.CaptureException):
+            self.run_flows(task)
+        self.assertRegex(task.info['One'], r'^Failed in \d\d:\d\d\. The game window is gone\.$')
+
+    def test_an_error_with_no_message_still_says_what_it_was(self):
+        task = _Flows(raises={'Two': KeyError()})
+        self.run_flows(task)
+        self.assertRegex(task.info['Two'], r'^Failed in \d\d:\d\d\. KeyError\.$')
+
 
 class TestClock(unittest.TestCase):
     """Flow and run times read like the header's own clock."""
@@ -3460,6 +3473,12 @@ class TestInfoTable(unittest.TestCase):
         detail._fill_info()
         self.assertEqual(40, detail.info_table.rowHeight(0))
         self.assertGreater(detail.info_table.rowHeight(1), 40)
+
+    def test_a_framework_that_renamed_fill_info_still_starts(self):
+        """The patch is a nicety, so a framework update that moves `_fill_info` should cost the tidy table, not the app."""
+        info_table = importlib.import_module('src.info_table')
+        with mock.patch('ok.ui.qt.tasks.tasks_page.TaskDetail', type('Moved', (), {})):
+            info_table.apply()
 
     def test_apply_twice_wraps_once(self):
         info_table = importlib.import_module('src.info_table')

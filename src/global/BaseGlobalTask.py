@@ -15,6 +15,9 @@ from src.core.BaseGfTask import BaseGfTask
 # move on to, so they go straight up to the executor, which is where the framework already sorts them out.
 STOP_THE_RUN = (TaskDisabledException, FinishedException, CaptureException)
 
+# The part of `STOP_THE_RUN` the user asked for. A lost game window ends the run as well, but its flow row reads Failed with the reason, not Stopped.
+STOPPED_BY_USER = (TaskDisabledException, FinishedException)
+
 # Shared on-screen vocabulary. Every pattern here is compiled with re.I, so no pattern needs its own
 # character classes for case. Anything referenced by more than one module in this package belongs here
 # rather than being restated, because the Global client does rename labels - Public Area became Crew Deck.
@@ -911,12 +914,12 @@ class BaseGlobalTask(BaseGfTask):
             getattr(self, method)()
             if self.flow_ended_early:
                 status = ENDED_EARLY
-        except STOP_THE_RUN:
+        except STOPPED_BY_USER:
             status = STOPPED
             raise
         except Exception as error:
             status = FAILED
-            self.flow_lines.append(str(error.args[0]) if error.args else str(error))
+            self.flow_lines.append((str(error.args[0]) if error.args else '') or type(error).__name__)
             raise
         finally:
             lines = ' '.join(dict.fromkeys(filter(None, map(sentence, self.flow_lines))))

@@ -58,4 +58,7 @@ def apply():
     except ImportError as error:
         logger.warning(f'could not tidy the Info table, the task page moved: {error}')
         return
-    patch(TaskDetail)
+    try:
+        patch(TaskDetail)
+    except AttributeError as error:
+        logger.warning(f'could not tidy the Info table, the task page changed: {error}')
