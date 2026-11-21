@@ -356,7 +356,7 @@ WALK_OPTIONS = (
     ('Tea Time Walk', '0.636-1.25-0.495',
      'How long to hold each movement key walking from the Crew Deck entrance to the coffee machine, as left-forward-right in seconds.'),
     ('Delicious Cuisine Walk', '0.747',
-     'How long to hold the back key walking from the Crew Deck entrance to the kitchen, in seconds.'),
+     'How long to hold the back key walking from the Crew Deck entrance to the kitchen, in seconds. A tap right follows it.'),
     ('Water Flower Walk', '0.95-1.03-3.08',
      'How long to hold each movement key walking from the Crew Deck entrance to the flower pot, as right-back-right in seconds.'),
 )
@@ -459,9 +459,9 @@ class Station(NamedTuple):
 # Visited in this order, each starting from the deck entrance.
 STATIONS = (
     Station('Tea Time', TEA_TIME, ['a', 'w', 'd'], 'Tea Time Walk', 0.7, 'make_drink', DRINK_BUFF_ICON),
-    # One key, unlike the CN route, which taps `d` after holding `s`. Walking it by hand showed the tap
-    # is not needed to end up in reach of the kitchen.
-    Station('Delicious Cuisine', DELICIOUS_CUISINE, ['s'], 'Delicious Cuisine Walk', 1, 'cook_dish', FOOD_BUFF_ICON),
+    # Holds `s`, then taps `d`, the same as the CN route. On 2026-11-20 the hold alone stopped just short:
+    # only the doll's talk was on offer, and one tap right brought Delicious Cuisine into reach.
+    Station('Delicious Cuisine', DELICIOUS_CUISINE, ['s', 'd'], 'Delicious Cuisine Walk', 1, 'cook_dish', FOOD_BUFF_ICON),
     # Last, and the only station that always costs its walk. Watering grants no buff, so nothing in the
     # corner says whether it has been done - the only counter that says so is on the flower's own screen,
     # behind the walk. Putting it after the two that can be ruled out from the entrance keeps that cost

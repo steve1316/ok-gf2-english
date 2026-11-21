@@ -517,6 +517,12 @@ class TestWalkTimes(unittest.TestCase):
         """A setting naming fewer durations than the walk has keys shortens the walk rather than raising."""
         self.assertEqual([1.0, 0.0], self.walk_times('1.0', 2))
 
+    def test_the_kitchen_walk_ends_on_a_tap_right(self):
+        """Holding back alone stops just short of the kitchen. One tap right brings Delicious Cuisine into reach."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        station = next(station for station in daily.STATIONS if station.label == 'Delicious Cuisine')
+        self.assertEqual(['s', 'd'], station.keys)
+
     def test_every_walk_default_fits_the_single_line_editor(self):
         """The settings panel picks its editor by how long the value is: 16 characters or fewer gets a one-line box, anything longer a multi-line one.
 
@@ -2280,7 +2286,7 @@ class TestCrewDeckTrips(unittest.TestCase):
         task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
         self.assertEqual(['Delicious Cuisine'], task.opened)
-        self.assertEqual([['s']], task.walked)
+        self.assertEqual([['s', 'd']], task.walked)
         self.assertEqual(1, task.entries, 'the skipped station left the character at the entrance, so no second entry is needed')
 
     def test_the_second_buff_being_up_costs_no_entry_of_its_own(self):
@@ -2739,19 +2745,19 @@ class TestCrewDeckChaining(unittest.TestCase):
         """Tea Time walks left-forward-right, so it comes home left-back-right before the kitchen walk starts."""
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
-        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s']], task.walked)
+        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s', 'd']], task.walked)
 
     def test_the_last_station_never_walks_back(self):
         """Nothing follows it, so the walk home would be held keys spent on nothing before backing out anyway."""
         task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False})
         task.crew_deck()
-        self.assertEqual([['s']], task.walked)
+        self.assertEqual([['s', 'd']], task.walked)
 
     def test_a_station_that_never_opened_re_enters_instead_of_walking_back(self):
         """An activity that did not finish leaves the character somewhere unknown, and reversing an unknown position compounds the error rather than undoing it."""
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, opens=False)
         task.crew_deck()
-        self.assertEqual([['a', 'w', 'd'], ['s']], task.walked, 'the failed walk is not reversed')
+        self.assertEqual([['a', 'w', 'd'], ['s', 'd']], task.walked, 'the failed walk is not reversed')
         self.assertEqual(2, task.entries, 're-entering is the only way back to a known position')
 
     def test_a_deck_that_is_not_walkable_re_enters_instead_of_walking_back(self):
@@ -2759,7 +2765,7 @@ class TestCrewDeckChaining(unittest.TestCase):
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, walkable=False)
         task.crew_deck()
         self.assertEqual(2, task.entries)
-        self.assertEqual([['a', 'w', 'd'], ['s']], task.walked)
+        self.assertEqual([['a', 'w', 'd'], ['s', 'd']], task.walked)
 
     def test_nothing_is_walked_back_when_no_station_is_left_to_visit(self):
         """The second station's buff is already up, so walking home only to back out is the trip this saves."""
@@ -2781,14 +2787,14 @@ class TestCrewDeckWalkRetry(unittest.TestCase):
         task.crew_deck()
         self.assertEqual(1, task.travels)
         self.assertEqual(['Delicious Cuisine', 'Water Flower'], task.opened, 'the retried station runs, and the next one still follows')
-        self.assertEqual([['s'], ['s'], ['w'], ['d', 's', 'd']], task.walked)
+        self.assertEqual([['s', 'd'], ['s', 'd'], ['a', 'w'], ['d', 's', 'd']], task.walked)
         self.assertEqual(1, task.entries, 'fast travel replaces leaving and coming in again')
 
     def test_the_kitchen_is_retried_after_the_walk_back_from_tea_time_drifts(self):
         task = _Trips(lit={'Tea Time': False, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, prompts=[True, False])
         task.crew_deck()
         self.assertEqual(['Tea Time', 'Delicious Cuisine'], task.opened)
-        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s'], ['s']], task.walked)
+        self.assertEqual([['a', 'w', 'd'], ['a', 's', 'd'], ['s', 'd'], ['s', 'd']], task.walked)
 
     def test_a_second_miss_gives_up_on_that_station_only(self):
         task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, prompts=[False, False])
@@ -2800,7 +2806,7 @@ class TestCrewDeckWalkRetry(unittest.TestCase):
     def test_a_fast_travel_that_fails_does_not_walk_again(self):
         task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False}, config={**DECK_CONFIG, 'Water Flower': False}, prompts=[False], can_travel=False)
         task.crew_deck()
-        self.assertEqual([['s']], task.walked, 'walking from wherever the map left the character would miss again')
+        self.assertEqual([['s', 'd']], task.walked, 'walking from wherever the map left the character would miss again')
         self.assertEqual([], task.opened)
 
 
@@ -2838,7 +2844,7 @@ class TestWaterFlowerTrips(unittest.TestCase):
         task = _Trips(lit={'Tea Time': True, 'Delicious Cuisine': False})
         task.crew_deck()
         self.assertEqual(['Delicious Cuisine', 'Water Flower'], task.opened)
-        self.assertEqual([['s'], ['w'], ['d', 's', 'd']], task.walked)
+        self.assertEqual([['s', 'd'], ['a', 'w'], ['d', 's', 'd']], task.walked)
         self.assertEqual(1, task.entries)
 
 
