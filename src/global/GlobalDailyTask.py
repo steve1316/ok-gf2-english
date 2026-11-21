@@ -19,11 +19,13 @@ EVENT_BANNER = (0.104, 0.157)
 BANNER_PITCH = 0.079
 EVENT_SLOTS = 3
 EVENT_PAGE = re.compile(r'Challenge|Supply|Story', re.I)
-SUPPLY = re.compile(r'\bSupply\b', re.I)
+# The older layout's button, the map's tab and the map's own title all read the bare word, in every click
+# on record. Anchored because some events' part cards read "Story 0% Supply 0%".
+SUPPLY = re.compile(r'^Supply$', re.I)
 
 # Newer events have no Supply button of their own. They split into parts, one card each along the bottom
-# of the event page carrying that part's own Story and Supplies links, and a part that has not opened yet
-# shows "Not enabled" beside its title. Opening a card lands on its Story map with the Supply tab beside
+# of the event page carrying that part's own Story and Supply links, and a part that has not opened yet
+# shows "Not enabled" above its title. Opening a card lands on its Story map with the Supply tab beside
 # it, so `SUPPLY` is still what gets clicked - one screen later than on the older layout.
 #
 # The band starts below the mode entries up the sides of the page, which carry "Not enabled" of their own.
@@ -32,13 +34,13 @@ PART_BAND = (0.0, 0.72, 1.0, 1.0)
 # the strip along the bottom carries both words whichever tab is showing, and the stage codes are the
 # event's own, so neither says which of the two maps is being read.
 MAP_TITLE_BAND = (0.30, 0.03, 0.70, 0.14)
-SUPPLY_MAP = re.compile(r'^Supply$', re.I)
-SUPPLIES = re.compile(r'Supplies', re.I)
+# A part card's link. Chiral Redundancy wrote "Supplies 0%" and Iliad writes "Supply 0%/100%".
+SUPPLY_LINK = re.compile(r'Suppl(?:y|ies)', re.I)
 NOT_ENABLED = re.compile(r'Not\s*enabled', re.I)
 PART_NUMBER = re.compile(r'Part\s*(\d+)', re.I)
-# How far from a card's Supplies link its own title and lock notice may sit, as a fraction of frame width.
-# The cards sit at opposite ends of the page, two thirds of the frame apart, so a span wide enough to take
-# in a whole card still reaches nowhere near its neighbour.
+# How far across one column of cards its text may spread, as a fraction of frame width. Chiral's two cards
+# sit at opposite ends of the page, two thirds of the frame apart, so this takes in a whole card and never
+# its neighbour. Iliad also stacks two cards up the right side, and those are told apart by height.
 CARD_SPREAD = 0.25
 
 # Event tickets, in the top-right corner of the event page. Every event puts the count in the same spot
@@ -609,32 +611,38 @@ def banner_position(slot):
 
 
 def pick_supplies_link(boxes, width):
-    """Choose which part's Supplies link to open, on an event page that splits its modes into parts.
+    """Choose which part's Supply link to open, on an event page that splits its modes into parts.
 
-    The later part is the one worth running, and a part that has not opened yet says "Not enabled" beside its own title, so the pick is the highest numbered
-    part that does not. A card is grouped by how close its text sits, since the parts are drawn at opposite ends of the page. A card whose number could not
-    be read sorts below every numbered one and falls back on its position, which leaves a single-part event working without a case of its own.
+    The later part is the one worth running, and a part that has not opened yet says "Not enabled" above its own title, so the pick is the highest
+    numbered part that does not. Text belongs to the card whose title sits nearest it in the same column, since some events stack two cards up one
+    side of the page. A card whose number could not be read sorts below every numbered one and falls back on its position, which leaves a single-part
+    event working without a case of its own.
 
     Args:
         boxes: What OCR read across the part cards.
         width: Frame width in pixels, for measuring how far apart two boxes are.
 
     Returns:
-        The `Supplies` Box to click, or None when nothing there was a part that has opened.
+        The link Box to click, or None when nothing there was a part that has opened.
     """
     spread = width * CARD_SPREAD
     numbered = [(box, int(found.group(1))) for box in boxes if box.name and (found := PART_NUMBER.search(box.name))]
 
-    def near(box, link):
-        """Whether `box` sits close enough to `link` to be part of the same card."""
-        return abs(box.x - link.x) < spread
+    def near(box, other):
+        """Whether `box` and `other` sit in the same column of cards."""
+        return abs(box.x - other.x) < spread
+
+    def title_of(box):
+        """The title of `box`'s own card: the one nearest it in its column, or None when that column has none that could be read."""
+        return min((title for title, _ in numbered if near(title, box)), key=lambda title: abs(title.y - box.y), default=None)
 
     def part_of(link):
-        """The part number on `link`'s own card, or 0 when none of them could be read."""
-        return max((number for box, number in numbered if near(box, link)), default=0)
+        """The part number on `link`'s own card, or 0 when it could not be read."""
+        title = title_of(link)
+        return next((number for box, number in numbered if box is title), 0)
 
     locked = find_boxes_by_name(boxes, NOT_ENABLED)
-    open_links = [link for link in find_boxes_by_name(boxes, SUPPLIES) if not any(near(box, link) for box in locked)]
+    open_links = [link for link in find_boxes_by_name(boxes, SUPPLY_LINK) if not any(near(lock, link) and title_of(lock) is title_of(link) for lock in locked)]
     if not open_links:
         return None
     return max(open_links, key=lambda link: (part_of(link), link.x))
@@ -1052,7 +1060,7 @@ class GlobalDailyTask(BaseGlobalTask):
         """Get from an event's landing page to its Supply map.
 
         Two layouts. Older events put a Supply button straight on the landing page. Newer ones split the event into parts, each a card along the bottom with
-        a Supplies link of its own, and opening one lands on that part's Story map with the Supply tab beside it. Either way what is pressed next is a
+        a Supply link of its own, and opening one lands on that part's Story map with the Supply tab beside it. Either way what is pressed next is a
         `Supply` in the bottom right, so only reaching it differs.
 
         Returns:
@@ -1061,15 +1069,15 @@ class GlobalDailyTask(BaseGlobalTask):
         entry = self.wait_until(self.supply_entry, time_out=SCREEN_SETTLE_TIME_OUT)
         if not entry:
             return False
-        # Which layout was found is written on the box: `SUPPLY` cannot match a card's "Supplies", and
-        # `SUPPLIES` cannot match the button's "Supply".
+        # Which layout was found is written on the box. A card's link always carries its percentage, which the
+        # anchored `SUPPLY` will not match.
         if not SUPPLY.search(entry.name):
             self.log_info(f'this event splits into parts, opening {entry.name!r}')
             # No sleep: the press below waits for the tab strip this brings up.
             self.click(entry)
         return self.press_until(
             lambda: self.wait_click_ocr(match=SUPPLY, box=self.box.bottom_right, time_out=SCREEN_SETTLE_TIME_OUT),
-            SUPPLY_MAP, box=self.box_of_screen(*MAP_TITLE_BAND), what='Supply')
+            SUPPLY, box=self.box_of_screen(*MAP_TITLE_BAND), what='Supply')
 
     def supply_entry(self):
         """Find the way onwards on whichever layout this event's landing page uses.
@@ -1082,11 +1090,12 @@ class GlobalDailyTask(BaseGlobalTask):
             The Box to click, or None when neither layout was recognised.
         """
         boxes = self.ocr(box=self.box.bottom)
-        # The same pattern and the same corner as the older layout used on its own, so nothing changes for
-        # the events that carry a Supply button.
-        if direct := self.find_boxes(boxes, match=SUPPLY, boundary=self.box.bottom_right):
+        cards = self.find_boxes(boxes, boundary=self.box_of_screen(*PART_BAND))
+        # A page of part cards has no button of its own, so a bare "Supply" that OCR broke off one of them is
+        # left to the card picker. Otherwise this is the same pattern and corner the older layout always used.
+        if not any(box.name and PART_NUMBER.search(box.name) for box in cards) and (direct := self.find_boxes(boxes, match=SUPPLY, boundary=self.box.bottom_right)):
             return direct[0]
-        return pick_supplies_link(self.find_boxes(boxes, boundary=self.box_of_screen(*PART_BAND)), self.width)
+        return pick_supplies_link(cards, self.width)
 
     def last_supply_stage(self):
         """Scroll the Supply map to its right end and return the furthest-right stage node.

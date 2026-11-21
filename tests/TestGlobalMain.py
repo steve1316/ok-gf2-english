@@ -119,6 +119,32 @@ class TestGlobalMain(TaskTestCase):
         self.assertTrue(any(re.search('Recruitment', n, re.I) for n in names), f'expected English text, got {names}')
         self.assertFalse(any('招募' in n for n in names), f'text was translated into Chinese: {names}')
 
+    def test_a_locked_part_card_is_not_taken_for_the_supply_button(self):
+        """Iliad's locked Part 1.5 card reads "Story 0% Supply 0%" right where older events kept a bare Supply button.
+
+        Both frames are the Iliad page with only Part 1 open. The release run pressed the locked card three times and gave up.
+        """
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        for name in ('event_parts_locked_part_right', 'event_parts_supply_100'):
+            self.set_image(f'tests/images/{name}.jpg')
+            entry = self.task.supply_entry()
+            self.assertIsNotNone(entry, name)
+            self.assertLess(entry.x, self.task.width / 2, f'{name} should open Part 1, got {entry.name!r} at {entry.x}')
+            self.assertFalse(daily.SUPPLY.search(entry.name), f'{name} should open a card, not press {entry.name!r} as the Supply button')
+
+    def test_a_split_read_of_a_locked_card_is_not_taken_for_the_supply_button(self):
+        """OCR can break a card's line apart. A bare "Supply" on a page of part cards still belongs to its card, locked or not."""
+        boxes = [
+            Box(112, 967, 148, 28, name='Iliad -Part 1'), Box(112, 999, 216, 31, name='Story 0% Supply 0%'),
+            Box(1705, 820, 132, 38, name='Not enabled'), Box(1666, 862, 170, 27, name='lliad - Part 1.5'),
+            Box(1620, 891, 90, 34, name='Story 0%'), Box(1730, 891, 70, 34, name='Supply'),
+            Box(1687, 939, 142, 40, name='Not enabled'), Box(1670, 979, 148, 28, name='Iliad-Part2'), Box(1717, 1002, 98, 41, name='Story0%'),
+        ]
+        self.set_image('tests/images/event_parts_locked_part_right.jpg')
+        with mock.patch.object(self.task, 'ocr', return_value=boxes):
+            entry = self.task.supply_entry()
+        self.assertEqual(112, entry.x)
+
     def press(self, method, found, **kwargs):
         """Run one press with the reads and the input stubbed out.
 
@@ -1134,6 +1160,30 @@ class TestSuppliesLink(unittest.TestCase):
             boxes.insert(0, self.text(x, 'Not enabled'))
         return boxes
 
+    def iliad(self, *open_parts):
+        """The Iliad page as OCR read it on the release run: Part 1 along the bottom left, Parts 1.5 and 2 stacked up the right.
+
+        Args:
+            open_parts: The parts ('1', '1.5', '2') whose cards have opened. The rest carry their "Not enabled" notice.
+
+        Returns:
+            A list of `Box`.
+        """
+        cards = {
+            '1': (Box(112, 967, 148, 28, name='Iliad -Part 1'), Box(112, 999, 216, 31, name='Story 0% Supply 0%')),
+            '1.5': (Box(1705, 820, 132, 38, name='Not enabled'), Box(1666, 862, 170, 27, name='lliad - Part 1.5'), Box(1620, 891, 216, 34, name='Story 0% Supply 0%')),
+            '2': (Box(1687, 939, 142, 40, name='Not enabled'), Box(1670, 979, 148, 28, name='Iliad-Part2'), Box(1717, 1002, 98, 41, name='Story0%')),
+        }
+        return [box for part, card in cards.items() for box in card if part not in open_parts or box.name != 'Not enabled']
+
+    def test_a_card_reading_supply_instead_of_supplies_still_opens(self):
+        """Iliad words its cards "Supply" where Chiral Redundancy said "Supplies"."""
+        self.assertEqual(112, self.pick(self.iliad('1')).x)
+
+    def test_a_lock_on_the_card_below_does_not_close_the_open_card_above(self):
+        """Iliad stacks Part 1.5 over Part 2, so Part 2's lock sits right under Part 1.5's link, in the same column."""
+        self.assertEqual(1620, self.pick(self.iliad('1', '1.5')).x)
+
     def test_the_open_part_is_chosen_over_the_locked_one(self):
         """The page in the screenshots: Part 1 finished and open, Part 2 not enabled yet."""
         picked = self.pick(self.card(self.LEFT_CARD, 1) + self.card(self.RIGHT_CARD, 2, locked=True))
@@ -1219,7 +1269,7 @@ class _EventPage:
 
     def wait_ocr(self, match=None, box=None, time_out=0, **kwargs):
         daily = importlib.import_module('src.global.GlobalDailyTask')
-        if match is daily.SUPPLY_MAP and self.on_supply_map:
+        if match is daily.SUPPLY and self.on_supply_map:
             return [Box(900, 83, 120, 40, name='Supply')]
         return []
 
