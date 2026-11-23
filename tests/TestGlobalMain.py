@@ -119,6 +119,14 @@ class TestGlobalMain(TaskTestCase):
         self.assertTrue(any(re.search('Recruitment', n, re.I) for n in names), f'expected English text, got {names}')
         self.assertFalse(any('招募' in n for n in names), f'text was translated into Chinese: {names}')
 
+    def test_the_last_stage_on_a_real_supply_map_is_the_one_picked(self):
+        """Iliad Part 1's Supply map, captured by the flow check that ran KF-1-4 because KF-1-5 never read whole live."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        self.set_image('tests/images/event_supply_map.jpg')
+        stage = daily.rightmost_stage(self.task.ocr(box=self.task.box_of_screen(*daily.STAGE_BAND)))
+        self.assertIsNotNone(stage)
+        self.assertGreater(stage.x, 1200, f'expected KF-1-5, the rightmost stage, got {stage.name!r} at {stage.x}')
+
     def test_a_locked_part_card_is_not_taken_for_the_supply_button(self):
         """Iliad's locked Part 1.5 card reads "Story 0% Supply 0%" right where older events kept a bare Supply button.
 
@@ -1324,6 +1332,99 @@ class TestSupplyMapArrival(unittest.TestCase):
         page = _EventPage(entry_found=False)
         self.assertFalse(page.open_supply_map())
         self.assertEqual(0, page.presses)
+
+
+def _stage_row(*labels):
+    """Boxes along the Supply map's stage row, the way OCR reads them.
+
+    Args:
+        *labels: (name, x) pairs, x being the box's left edge in a 1920-wide frame.
+
+    Returns:
+        A list of Boxes at the height Iliad's labels sit.
+    """
+    return [Box(x, 511, 20 * len(name), 34, name=name) for name, x in labels]
+
+
+# What the release run on Nov 23 read on Iliad Part 1's Supply map: KF-1-3 as "KE-", KF-1-4 not at all, and KF-1-5 split in two.
+RELEASE_SUPPLY_READ = _stage_row(('2', 6), ('KE-', 389), ('KF-', 1312), ('5', 1390))
+# The four looks a live flow check took at the same map, in order. KF-1-4 read whole on the last two, KF-1-5 never did.
+LIVE_SUPPLY_READS = [
+    _stage_row(('2', 6), ('KE', 389), ('KF-1-', 848), ('KF-', 1312), ('5', 1390)),
+    _stage_row(('2', 6), ('KE.', 389), ('米米', 732), ('KF-1-', 848), ('KF-', 1312), ('5', 1390)),
+    _stage_row(('2', 6), ('KE', 389), ('米米', 732), ('KF-1-4', 848), ('KF-', 1312), ('5', 1390)),
+    _stage_row(('2', 6), ('KE', 389), ('KF-1-4', 848), ('KF-', 1312), ('5', 1390)),
+]
+
+
+class _SupplyMap:
+    """A stand-in for the daily task on an event's Supply map, scripted with what each look at the stage row reads.
+
+    Borrows the real `last_supply_stage`. Each look takes the next read off the script, and the last one repeats, as a map that has stopped would.
+    """
+
+    last_supply_stage = GlobalDailyTask.last_supply_stage
+    width = 1920
+
+    def __init__(self, *looks):
+        self.looks = list(looks)
+        self.reads = 0
+        self.swipes = 0
+
+    def box_of_screen(self, *args):
+        return None
+
+    def ocr(self, **kwargs):
+        boxes = self.looks[min(self.reads, len(self.looks) - 1)]
+        self.reads += 1
+        return list(boxes)
+
+    def swipe_relative(self, *args, **kwargs):
+        self.swipes += 1
+
+    def next_frame(self):
+        pass
+
+
+class TestSupplyStagePick(unittest.TestCase):
+    """Iliad's stage labels glitch as they draw, so OCR breaks them apart and reads the same label differently from one look to the next.
+
+    The flow waited for a whole stage code read the same way twice. On Nov 22 and 23 that never happened, and it skipped the event with its tickets
+    unspent. When it did happen, the code it got was KF-1-4 and not KF-1-5, the stage it was meant to run.
+    """
+
+    def test_a_split_label_is_still_a_stage(self):
+        """The release read. No whole code anywhere on it, and KF-1-5's first piece is still where the stage is."""
+        stage = _SupplyMap(RELEASE_SUPPLY_READ).last_supply_stage()
+        self.assertIsNotNone(stage, 'no stage found on a map that showed three')
+        self.assertEqual(1312, stage.x)
+
+    def test_the_last_stage_wins_when_only_an_earlier_one_reads_whole(self):
+        """The live flow check. It ran KF-1-4 because that was the only code that read whole twice."""
+        stage = _SupplyMap(*LIVE_SUPPLY_READS).last_supply_stage()
+        self.assertEqual(1312, stage.x, f'picked {stage.name!r} at {stage.x}, not KF-1-5')
+
+    def test_a_map_at_its_end_takes_one_swipe(self):
+        """The map stops moving the first time it is swiped, and a second look is enough to say so."""
+        game = _SupplyMap(RELEASE_SUPPLY_READ)
+        game.last_supply_stage()
+        self.assertEqual(1, game.swipes)
+
+    def test_a_map_that_scrolls_is_followed_to_its_end(self):
+        """A map that opens part way along moves under the swipe, and the stage it settles on is the last one."""
+        start = _stage_row(('KF-1-1', 388), ('KF-1-2', 848), ('KF-1-3', 1312))
+        end = _stage_row(('KF-1-3', 160), ('KF-1-4', 620), ('KF-1-5', 1080))
+        game = _SupplyMap(start, end, end)
+        stage = game.last_supply_stage()
+        self.assertEqual('KF-1-5', stage.name)
+        self.assertEqual(2, game.swipes)
+
+    def test_a_map_with_no_labels_is_not_a_stage(self):
+        """Stars and the cut-off edge of the stage before are all that is left, and neither opens anything."""
+        daily = importlib.import_module('src.global.GlobalDailyTask')
+        game = _SupplyMap(_stage_row(('2', 6), ('米米', 732), ('5', 1390)))
+        self.assertIsNone(game.last_supply_stage())
+        self.assertEqual(daily.STAGE_SWIPES, game.swipes)
 
 
 class _Commissions:
