@@ -65,6 +65,12 @@ EVENT_PAGE_DRAW_PAUSE = 3
 # Stage nodes sit in a horizontal band across the middle of the Supply map. Scanning a band rather than
 # the whole frame keeps the repeated scroll-and-look cheap.
 STAGE_BAND = (0.0, 0.38, 1.0, 0.62)
+# A stage label that OCR broke apart, known by the event's letters and the dash that keeps its first piece. Iliad's labels glitch as they draw, and
+# live reads of its Supply map came back with KF-1-5 as "KF-" + "5" on every look and KF-1-4 as "KF-1-" on half of them.
+STAGE_PIECE = re.compile(r'^[A-Z]{1,2}-')
+# How far the rightmost stage may move between two looks, as a fraction of frame width, and still count as the map having stopped. A broken label and
+# a whole one share their left edge to within a pixel, and Iliad's stages sit 0.24 of the frame apart, so this sits well clear of both.
+STAGE_SETTLED = 0.03
 STAGE_SWIPES = 5
 EVENT_BATTLE_TIME_OUT = 900
 
@@ -648,6 +654,22 @@ def pick_supplies_link(boxes, width):
     return max(open_links, key=lambda link: (part_of(link), link.x))
 
 
+def rightmost_stage(boxes):
+    """The furthest-right stage label on an event's Supply map.
+
+    A label read whole matches upstream's `map_re`. One that OCR broke apart counts from its first piece, which keeps the letters and the dash and
+    still sits on the label, so clicking it opens the same stage.
+
+    Args:
+        boxes: What OCR read across the map's stage row.
+
+    Returns:
+        The rightmost stage `Box`, or None when nothing there looked like a stage label.
+    """
+    stages = find_boxes_by_name(boxes, [map_re, STAGE_PIECE])
+    return max(stages, key=lambda box: box.x, default=None)
+
+
 def walk_times(option, key_count):
     """Turn a walk-timing setting into one hold duration per movement key.
 
@@ -1009,7 +1031,7 @@ class GlobalDailyTask(BaseGlobalTask):
             return self.stop_flow('This event has no Supply mode, skipping.', dump='no_supply_mode')
         stage = self.last_supply_stage()
         if not stage:
-            return self.stop_flow('Found no Supply stages on the map, skipping.')
+            return self.stop_flow('Found no Supply stages on the map, skipping.', dump='event_supply_no_stages')
         self.log_info(f'running event supply stage {stage.name}')
         self.click(stage)
         if not self.run_auto_battles(EVENT_BATTLE_TIME_OUT):
@@ -1098,30 +1120,25 @@ class GlobalDailyTask(BaseGlobalTask):
         return pick_supplies_link(cards, self.width)
 
     def last_supply_stage(self):
-        """Scroll the Supply map to its right end and return the furthest-right stage node.
+        """Scroll the Supply map to its right end and return the furthest-right stage label.
 
-        The map opens part way along, and the last stage is the one worth running. Swiping stops early once a scroll reveals nothing new, so a short map
-        costs no extra passes.
+        The map can open part way along, and the last stage is the one worth running. Swiping stops once the rightmost stage stays put between two
+        looks, so a map already at its end costs one swipe. That is judged by where the stage sits rather than what it reads, because Iliad's labels
+        glitch as they draw and the same label reads differently from one look to the next.
 
         Returns:
-            The rightmost stage `Box`, or None when the map showed no stage codes.
+            The rightmost stage `Box`, or None when the map showed no stage labels.
         """
         band = self.box_of_screen(*STAGE_BAND)
-        previous = stages = None
+        previous = None
         for _ in range(STAGE_SWIPES):
-            stages = self.ocr(match=map_re, box=band)
-            names = tuple(sorted(box.name for box in stages))
-            if names and names == previous:
-                break
-            previous = names
+            stage = rightmost_stage(self.ocr(box=band))
+            if stage and previous and abs(stage.x - previous.x) <= self.width * STAGE_SETTLED:
+                return stage
+            previous = stage
             self.swipe_relative(0.8, 0.5, 0.2, 0.5, duration=0.5, settle_time=1)
             self.next_frame()
-            # Only the swipe invalidates what was read. Leaving the loop on unchanged names means the
-            # last read still describes what is on screen, so it is kept rather than taken again.
-            stages = None
-        if stages is None:
-            stages = self.ocr(match=map_re, box=band, log=True)
-        return max(stages, key=lambda box: box.x) if stages else None
+        return rightmost_stage(self.ocr(box=band, log=True))
 
     # //////////////////////////////////////////////////////////////////////////////////////////////////
     # //////////////////////////////////////////////////////////////////////////////////////////////////
