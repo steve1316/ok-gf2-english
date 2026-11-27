@@ -16,7 +16,7 @@ on:
         default: false
         type: boolean
       dry_run:
-        description: 'Build the newest existing tag without pushing a tag or publishing a release. The installers are kept as a workflow artifact.'
+        description: 'Build the newest existing tag without pushing a tag or publishing a release. The installers are kept as a workflow artifact, and a launcher it had to build is still committed.'
         required: false
         default: false
         type: boolean
@@ -29,9 +29,12 @@ jobs:
 
     env:
       PYTHONIOENCODING: 'UTF-8'
-      # Pinned rather than @master: the launcher cache below relies on the action skipping its build when it finds a
-      # launcher already in its build folder, so that behaviour should not change under us. Bump it here and in the
-      # Build step together.
+      # Pinned rather than following PyAppify's newest release, because the launcher committed under launcher/ is built
+      # from this version. Bumping it makes the next run rebuild the launcher once and commit the new one.
+      PYAPPIFY_VERSION: 'v1.2.9'
+      # Pinned rather than @master: the committed launcher relies on the action skipping its build when it finds a
+      # launcher already in its build folder, and on the prepare step below matching how the action lays that folder
+      # out. Bump it here and in the Build step together.
       PYAPPIFY_ACTION_SHA: 'a987e9ade9d7517f97b38636c0e07b44fd5ef379'
 
     steps:
@@ -167,42 +170,81 @@ jobs:
         run: |
           python -m ok.update.inline_ok_requirements --tag ${{ env.TAG }}
 
-      # Follows PyAppify's newest release, as the action does on its own, but named here so it can key the cache.
-      - name: Resolve the PyAppify version
+      # Compiling the launcher was 11 of the run's 22 minutes, and it comes out the same every time, so the built launcher
+      # is committed under launcher/. key.txt beside it records everything compiled into it. When that still matches,
+      # the run lays out PyAppify's build folder around the committed launcher and the action goes straight to the
+      # installers. When it does not, the action builds a new launcher and the last step commits it.
+      - name: Check the committed launcher
         shell: pwsh
         run: |
-          $refs = git ls-remote --tags --refs https://github.com/ok-oldking/pyappify.git 'v*'
+          $name = (Select-String -LiteralPath pyappify.yml -Pattern '^name:\s*"?([^"\s]+)"?').Matches[0].Groups[1].Value
+          $key = @(
+            "pyappify $env:PYAPPIFY_VERSION"
+            "action $env:PYAPPIFY_ACTION_SHA"
+            foreach ($path in 'pyappify.yml', 'icons', 'icon.ico') { "$path $(git rev-parse "HEAD:$path")" }
+          ) -join "`n"
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "git ls-remote failed, cannot read PyAppify's tags."
+            Write-Error "Could not read the launcher's inputs from the checkout."
             exit 1
           }
-          $version = @($refs) -replace '^\S+\s+refs/tags/', '' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-            Sort-Object { [version]$_.TrimStart('v') } | Select-Object -Last 1
-          if (-not $version) {
-            Write-Error "PyAppify has no version tag."
-            exit 1
+          [IO.File]::WriteAllText("$env:RUNNER_TEMP/launcher-key.txt", "$key`n")
+          $committed = ''
+          if (Test-Path -LiteralPath launcher/key.txt) { $committed = (Get-Content -LiteralPath launcher/key.txt -Raw).Replace("`r", '').Trim() }
+          $reuse = ($committed -eq $key) -and (Test-Path -LiteralPath "launcher/$name.exe")
+          "APP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LAUNCHER_COMMITTED=$($reuse.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($reuse) {
+            Write-Host "Reusing the committed launcher, built from:`n$key"
+          } else {
+            Write-Host "The committed launcher was built from:`n$(if ($committed) { $committed } else { '(nothing committed)' })"
+            Write-Host "This run needs one built from:`n$key`nso it builds the launcher and commits it at the end."
           }
-          "PYAPPIFY_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Building with PyAppify $version"
 
-      # Compiling the launcher was 11 of the run's 22 minutes, and it comes out the same every time. The action skips
-      # the clone, pnpm and the whole Rust build when its build folder already holds the launcher, so that folder is
-      # cached. The key is everything baked into the launcher: PyAppify's version, the action, pyappify.yml and the
-      # icons. node_modules is kept, so a cache hit needs no pnpm install. The leftovers are pruned after the build.
-      - name: Restore the launcher build
-        id: launcher
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/p
-          key: pyappify-launcher-${{ env.PYAPPIFY_VERSION }}-${{ env.PYAPPIFY_ACTION_SHA }}-${{ hashFiles('pyappify.yml', 'icons/**', 'icon.ico') }}
-
-      # The action sets pnpm up only when it builds the launcher, but bundling the installers runs the Tauri CLI
-      # through pnpm either way. pnpm/action-setup takes seconds where `npm install -g pnpm` took 80.
-      - name: Set up pnpm for the cached launcher
-        if: steps.launcher.outputs.cache-hit == 'true'
+      # The Tauri CLI runs through pnpm whether the launcher is built or reused. This takes seconds, and the action
+      # skips its own `npm install -g pnpm`, which took 80, when pnpm is already there.
+      - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 12
+
+      # What the action does before compiling, which it skips when it finds a launcher: clone PyAppify, copy in
+      # pyappify.yml and the icons, and put the app's name into its configs. tauri.conf.json goes through the action's
+      # own helper so it matches. The build.rs UAC edit only matters to the compile, so it is left out.
+      - name: Lay out the build folder around the committed launcher
+        if: env.LAUNCHER_COMMITTED == 'true'
+        shell: node {0}
+        run: |
+          const { execFileSync } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+          const { APP_NAME: appName, PYAPPIFY_VERSION: version, PYAPPIFY_ACTION_SHA: sha } = process.env;
+          const actionDir = path.join(path.dirname(process.env.RUNNER_WORKSPACE), '_actions', 'ok-oldking', 'pyappify-action', sha);
+          if (!fs.existsSync(actionDir)) throw new Error(`The Build step's action is not at ${actionDir}.`);
+          const { getMainBinaryName, prepareTauriConfig } = require(path.join(actionDir, 'build-config.js'));
+          const buildDir = path.join(process.env.RUNNER_TEMP, 'p');
+          execFileSync('git', ['clone', '--quiet', '--depth', '1', '--branch', version, 'https://github.com/ok-oldking/pyappify.git', buildDir], { stdio: 'inherit' });
+          const srcTauri = path.join(buildDir, 'src-tauri');
+          const edit = (file, change) => fs.writeFileSync(file, change(fs.readFileSync(file, 'utf8')));
+          fs.copyFileSync('pyappify.yml', path.join(srcTauri, 'assets', 'pyappify.yml'));
+          fs.cpSync('icons', path.join(srcTauri, 'icons'), { recursive: true });
+          edit(path.join(srcTauri, 'tauri.conf.json'), text => prepareTauriConfig(text, appName, version));
+          edit(path.join(srcTauri, 'Cargo.toml'), text => text.replace(/name = "pyappify"/g, `name = "${appName}"`));
+          edit(path.join(buildDir, 'package.json'), text => {
+            const pkg = JSON.parse(text);
+            const built = new Set([...((pkg.pnpm || {}).onlyBuiltDependencies || []), 'esbuild']);
+            pkg.pnpm = { ...pkg.pnpm, onlyBuiltDependencies: [...built].sort() };
+            return `${JSON.stringify(pkg, null, 2)}\n`;
+          });
+          const exe = `${getMainBinaryName(appName)}.exe`;
+          const release = path.join(srcTauri, 'target', 'release');
+          fs.mkdirSync(release, { recursive: true });
+          fs.copyFileSync(path.join('launcher', exe), path.join(release, exe));
+          console.log(`Placed launcher/${exe} in a PyAppify ${version} build folder at ${buildDir}`);
+
+      - name: Install PyAppify's build tools
+        if: env.LAUNCHER_COMMITTED == 'true'
+        working-directory: ${{ runner.temp }}/p
+        run: pnpm install
 
       - name: Build
         # Keep in step with PYAPPIFY_ACTION_SHA above.
@@ -210,25 +252,6 @@ jobs:
         with:
           version: ${{ env.PYAPPIFY_VERSION }}
           app_version: ${{ env.TAG }}
-
-      # The cache is saved when the job ends, so the build folder is pruned first. Exclude patterns on the cache step
-      # never matched under Windows paths, and the cache held 1 GB of compile leftovers the launcher does not need.
-      - name: Prune the launcher build before it is cached
-        if: steps.launcher.outputs.cache-hit != 'true'
-        shell: pwsh
-        working-directory: ${{ runner.temp }}/p
-        run: |
-          $leftovers = 'cache', 'src-tauri/data', 'src-tauri/target/release/deps', 'src-tauri/target/release/build',
-            'src-tauri/target/release/.fingerprint', 'src-tauri/target/release/incremental',
-            'src-tauri/target/release/bundle', 'src-tauri/target/release/nsis'
-          foreach ($path in $leftovers) {
-            if (-not (Test-Path -LiteralPath $path)) { continue }
-            $bytes = (Get-ChildItem -LiteralPath $path -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
-            Remove-Item -LiteralPath $path -Recurse -Force
-            Write-Host ("Pruned {0}: {1:N0} MB" -f $path, ($bytes / 1MB))
-          }
-          $kept = (Get-ChildItem -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
-          Write-Host ("Caching {0:N0} MB" -f ($kept / 1MB))
 
       - name: Add version to build filenames
         shell: pwsh
@@ -262,6 +285,33 @@ jobs:
 
             Download an installer below. Do not download the source archives - they do not include the
             packaged dependencies.
+
+      # A launcher this run built goes back to the branch the run came from, so the next run reuses it. The release is
+      # already out by now, so a failure here only warns rather than failing the run and pointing at the tag.
+      - name: Commit the new launcher
+        if: env.LAUNCHER_COMMITTED == 'false' && github.ref_type == 'branch'
+        shell: pwsh
+        run: |
+          $branch = '${{ github.ref_name }}'
+          $exe = "$env:RUNNER_TEMP/p/src-tauri/target/release/$env:APP_NAME.exe"
+          $tree = "$env:RUNNER_TEMP/launcher-commit"
+          git fetch --quiet origin $branch
+          git worktree add --quiet --detach $tree FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Could not check out $branch to commit the new launcher. The next run will build it again."
+            exit 0
+          }
+          New-Item -ItemType Directory -Force -Path "$tree/launcher" | Out-Null
+          Copy-Item -LiteralPath $exe -Destination "$tree/launcher/$env:APP_NAME.exe" -Force
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/launcher-key.txt" -Destination "$tree/launcher/key.txt" -Force
+          git -C $tree add launcher
+          git -C $tree commit --quiet -m "Update the committed PyAppify launcher to $env:PYAPPIFY_VERSION"
+          git -C $tree push --quiet origin "HEAD:refs/heads/$branch"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Could not push the new launcher to $branch. The next run will build it again."
+            exit 0
+          }
+          Write-Host ("Committed launcher/{0}.exe ({1:N1} MB) to {2}" -f $env:APP_NAME, ((Get-Item -LiteralPath $exe).Length / 1MB), $branch)
 
       # Deleting the tag here would race a re-run, so name the commands and leave the call to whoever is releasing.
       - name: Say how to remove the tag if the release failed
