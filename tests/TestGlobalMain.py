@@ -2496,6 +2496,9 @@ class _Shop:
         self.opened = []
         self.logged = []
         self.dumped = []
+        self.homes = 0
+        self.parked = False
+        self.config = {}
         self.box = types.SimpleNamespace(top=(0, 0, 1, 0.5), right=None, left=None)
 
     def log_info(self, message, notify=False):
@@ -2529,7 +2532,7 @@ class _Shop:
         return False
 
     def go_home(self):
-        pass
+        self.homes += 1
 
 
 class TestShopTabBadges(unittest.TestCase):
@@ -2579,6 +2582,81 @@ class TestShopTabBadges(unittest.TestCase):
         task.shopping()
         self.assertTrue([line for line in task.logged if 'Could not find' in line])
         self.assertEqual(1, len(task.dumped))
+
+
+class _WishlistEntry:
+    """A stand-in for the daily task about to open the Wishlist, scripted with whether the shop is already up and showing its Wishlist button.
+
+    Borrows the real `open_wishlist`, and records each step so the route taken can be checked.
+    """
+
+    open_wishlist = GlobalDailyTask.open_wishlist
+
+    def __init__(self, parked=False, showing=False):
+        """Build the stand-in.
+
+        Args:
+            parked: Whether Claim Free Packs left the shop up for this flow.
+            showing: Whether the Wishlist button is on screen right now.
+        """
+        self.parked = parked
+        self.showing = showing
+        self.actions = []
+        self.box = types.SimpleNamespace(right=None, bottom_left=None)
+
+    def ocr(self, match=None, box=None, **kwargs):
+        self.actions.append('probe')
+        return [Box(60, 1000, 120, 30, name='Wishlist')] if self.showing else []
+
+    def click(self, box, after_sleep=0):
+        self.actions.append('wishlist')
+
+    def log_info(self, message, notify=False):
+        pass
+
+    def go_home(self):
+        self.actions.append('home')
+        self.parked = False
+
+    def click_ocr_word(self, match, **kwargs):
+        self.actions.append('wishlist' if match.search('Wishlist') else 'shop')
+        return Box(60, 1000, 120, 30, name='Wishlist')
+
+
+class TestShopToWishlist(unittest.TestCase):
+    """Claim Free Packs and Buy Wishlist Items both happen in the shop, so the first leaves it open for the second instead of going home in between."""
+
+    def test_free_packs_stays_in_the_shop_when_the_wishlist_is_next(self):
+        task = _Shop('shop_tabs_no_badge')
+        task.config = {'Buy Wishlist Items': True}
+        task.shopping()
+        self.assertEqual(0, task.homes, 'went home only to walk straight back into the shop')
+        self.assertTrue(task.parked, 'a run that ends here has to know to go home')
+
+    def test_free_packs_goes_home_when_the_wishlist_is_off(self):
+        """Event Supply comes next then, and it starts from the home screen."""
+        task = _Shop('shop_tabs_no_badge')
+        task.config = {'Buy Wishlist Items': False}
+        task.shopping()
+        self.assertEqual(1, task.homes)
+        self.assertFalse(task.parked)
+
+    def test_the_wishlist_opens_from_the_shop_it_was_left_in(self):
+        entry = _WishlistEntry(parked=True, showing=True)
+        self.assertTrue(entry.open_wishlist())
+        self.assertEqual(['probe', 'wishlist'], entry.actions)
+
+    def test_a_parked_shop_without_the_button_falls_back_to_the_home_route(self):
+        """A popup left over from a claim can hide the button. Going home clears it, and that is no worse than before."""
+        entry = _WishlistEntry(parked=True, showing=False)
+        self.assertTrue(entry.open_wishlist())
+        self.assertEqual(['probe', 'home', 'shop', 'wishlist'], entry.actions)
+
+    def test_from_home_there_is_nothing_to_probe(self):
+        """Run on its own or with free packs off, the home screen is up, and a read for a shop button there is a wasted OCR pass."""
+        entry = _WishlistEntry(parked=False)
+        self.assertTrue(entry.open_wishlist())
+        self.assertEqual(['shop', 'wishlist'], entry.actions)
 
 
 class TestWaterFlower(unittest.TestCase):
@@ -3316,6 +3394,11 @@ class TestFlowOrder(unittest.TestCase):
         """It was left off while its station dialogs were unfinished. They are filled in now, and the buffs are free, so there is nothing left to opt into."""
         daily = importlib.import_module('src.global.GlobalDailyTask')
         self.assertNotIn('Crew Deck', daily.FLOWS_OFF_BY_DEFAULT)
+
+    def test_the_wishlist_comes_straight_after_the_free_packs(self):
+        """Claim Free Packs leaves the shop open for it, which only works when nothing else runs in between."""
+        order = self.order()
+        self.assertEqual(order.index('Claim Free Packs') + 1, order.index('Buy Wishlist Items'))
 
     def test_the_loop_runs_last(self):
         """It parks the run for up to `LOOP_TIME_OUT` seconds, and everything behind it waited that out for no reason."""
