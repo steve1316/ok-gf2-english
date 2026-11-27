@@ -184,39 +184,38 @@ jobs:
           }
           "PYAPPIFY_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Building with PyAppify $version"
+          # The action's build folder, in forward slashes. The cache's exclude patterns are globs, and the backslashes
+          # in runner.temp made every one of them miss, so the first cache held all 1 GB of compile leftovers.
+          "LAUNCHER_DIR=$($env:RUNNER_TEMP.Replace('\', '/'))/p" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Compiling the launcher was 11 of the run's 22 minutes, and it comes out the same every time. The action skips
       # the clone, pnpm and the whole Rust build when its build folder already holds the launcher, so that folder is
       # cached. The key is everything baked into the launcher: PyAppify's version, the action, pyappify.yml and the
-      # icons. Left out are the compile leftovers (GBs), node_modules (pnpm links it into a store that is not cached),
-      # pip's download cache, and what bundling stages or produces.
+      # icons. Left out are the compile leftovers (GBs), pip's download cache, and what bundling stages or produces.
+      # node_modules stays in, so a cache hit needs no pnpm install.
       - name: Restore the launcher build
         id: launcher
         uses: actions/cache@v4
         with:
           path: |
-            ${{ runner.temp }}/p
-            !${{ runner.temp }}/p/node_modules
-            !${{ runner.temp }}/p/cache
-            !${{ runner.temp }}/p/src-tauri/data
-            !${{ runner.temp }}/p/src-tauri/target/release/deps
-            !${{ runner.temp }}/p/src-tauri/target/release/build
-            !${{ runner.temp }}/p/src-tauri/target/release/.fingerprint
-            !${{ runner.temp }}/p/src-tauri/target/release/incremental
-            !${{ runner.temp }}/p/src-tauri/target/release/bundle
-            !${{ runner.temp }}/p/src-tauri/target/release/nsis
+            ${{ env.LAUNCHER_DIR }}
+            !${{ env.LAUNCHER_DIR }}/cache
+            !${{ env.LAUNCHER_DIR }}/src-tauri/data
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/deps
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/build
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/.fingerprint
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/incremental
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/bundle
+            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/nsis
           key: pyappify-launcher-${{ env.PYAPPIFY_VERSION }}-${{ env.PYAPPIFY_ACTION_SHA }}-${{ hashFiles('pyappify.yml', 'icons/**', 'icon.ico') }}
 
       # The action sets pnpm up only when it builds the launcher, but bundling the installers runs the Tauri CLI
-      # through pnpm either way. Installed the same way the action does it.
+      # through pnpm either way. pnpm/action-setup takes seconds where `npm install -g pnpm` took 80.
       - name: Set up pnpm for the cached launcher
         if: steps.launcher.outputs.cache-hit == 'true'
-        shell: pwsh
-        working-directory: ${{ runner.temp }}/p
-        run: |
-          npm install -g pnpm
-          pnpm install
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
 
       - name: Build
         # Keep in step with PYAPPIFY_ACTION_SHA above.
