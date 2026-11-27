@@ -83,6 +83,9 @@ BANNER_SLOTS_TEXT = (
     f'"1,2" or "2,3" when two events are running at once. Up to {EVENT_SLOTS}, opened in the order given.'
 )
 
+# Named once because Claim Free Packs checks it to decide whether to leave the shop open for the Wishlist.
+WISHLIST_FLOW = 'Buy Wishlist Items'
+
 # The flows this task performs, in the order it performs them: (config key, method, settings text).
 # Single source for the toggles, the settings descriptions, and the run order. `VerifyTasks` also reads
 # it, so a flow added here becomes individually runnable without any further wiring.
@@ -94,7 +97,8 @@ FLOWS = (
      'Visits the Crew Deck stations - Tea Time at the coffee machine, Delicious Cuisine at the kitchen. Walks there on a timer, so the walk settings below may need adjusting.'),
     ('Claim Free Packs', 'shopping',
      'Claims the shop supply boxes that are currently free.'),
-    ('Buy Wishlist Items', 'buy_wishlist',
+    # Straight after the free packs, which leave the shop open for it rather than going home in between.
+    (WISHLIST_FLOW, 'buy_wishlist',
      'Buys everything waiting in the shop Wishlist, one in-game shop at a time. Spends in-game currency, never real money, and only on what is already on the Wishlist.'),
     ('Run Event Supply', 'run_event_supply',
      'Auto-battles the last Supply stage of each running event, spending as much Expenditure as it can. Which home screen banners to open is set below.'),
@@ -110,7 +114,7 @@ FLOWS = (
 # Flows that stay switched off until they are asked for. Buy Wishlist Items because it is the only flow
 # that spends anything, and spending on the first run after an update is not something to decide on
 # someone's behalf.
-FLOWS_OFF_BY_DEFAULT = ('Buy Wishlist Items',)
+FLOWS_OFF_BY_DEFAULT = (WISHLIST_FLOW,)
 
 # Shown behind the Instructions button on Global Daily. These are the requirements a first run most often trips over, taken from the README, with the full
 # guide linked for everything else. The framework turns the bare URL into a link.
@@ -787,6 +791,8 @@ class GlobalDailyTask(BaseGlobalTask):
         The category and both tabs are opened by name rather than the shop being read wherever it happened to land. The landing page moves - a waiting free
         pack redirects into Quality Selection - and the free box sits somewhere different on each, so reading only the page the shop opened on missed both
         the weekly box and the daily one. A tab with no badge has nothing to claim, so it is not opened at all.
+
+        Stays in the shop when Buy Wishlist Items runs next, since that flow starts in the shop too and going home first only meant walking straight back.
         """
         self.info_set('current_task', 'shopping')
         # No sleep: the category click below waits for the shop's own rail to appear.
@@ -811,7 +817,11 @@ class GlobalDailyTask(BaseGlobalTask):
             self.log_info('Could not open the Quality Selection category, claiming from the page the shop is on instead.')
             claimed += self.claim_free_boxes()
         self.log_info(f'claimed {claimed} free supply box(es)', notify=True)
-        self.go_home()
+        if self.config.get(WISHLIST_FLOW):
+            # Parked rather than left as is, so a run that ends here still finishes at home.
+            self.parked = True
+        else:
+            self.go_home()
 
     def tab_has_badge(self, label, tab):
         """Whether a shop tab carries the orange badge that says something on it can be claimed.
@@ -917,9 +927,7 @@ class GlobalDailyTask(BaseGlobalTask):
         Select All is never touched. It comes up already ticked, so clicking it would clear the selection and buy nothing.
         """
         self.info_set('current_task', 'buy_wishlist')
-        # No sleep: the Wishlist click below waits for the shop to be up.
-        self.click_ocr_word(SHOP, box=self.box.right, pause=0, raise_if_not_found=True)  # pause=0: the home screen is already still.
-        if not self.click_ocr_word(WISHLIST, box=self.box.bottom_left, time_out=5, after_sleep=2):
+        if not self.open_wishlist():
             return self.stop_flow('No Wishlist in the shop, skipping.', dump='wishlist_missing')
         flagged = self.flagged_categories()
         if not flagged:
@@ -933,6 +941,25 @@ class GlobalDailyTask(BaseGlobalTask):
                 bought += 1
         self.log_info(f'bought from {bought} of {len(flagged)} Wishlist category(ies)', notify=True)
         self.go_home()
+
+    def open_wishlist(self):
+        """Open the Wishlist, from the shop Claim Free Packs left open when it did, or from the home screen otherwise.
+
+        The parked shop is probed with a single read. When the button is not there, most likely behind a leftover popup, this goes home and takes the usual
+        route, so it is never worse than starting from home. Without a park the home screen is up and there is nothing to probe.
+
+        Returns:
+            The Wishlist button that was clicked, or a falsy value when it could not be found.
+        """
+        if self.parked:
+            if showing := self.ocr(match=WISHLIST, box=self.box.bottom_left):
+                self.log_info('already in the shop, opening the Wishlist from here')
+                self.click(showing[0], after_sleep=2)
+                return showing[0]
+            self.go_home()
+        # No sleep: the Wishlist click below waits for the shop to be up.
+        self.click_ocr_word(SHOP, box=self.box.right, pause=0, raise_if_not_found=True)  # pause=0: the home screen is already still.
+        return self.click_ocr_word(WISHLIST, box=self.box.bottom_left, time_out=5, after_sleep=2)
 
     def flagged_categories(self):
         """Which Wishlist categories carry a count badge.
