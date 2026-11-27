@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: 'Build the newest existing tag without pushing a tag or publishing a release. The installers are kept as a workflow artifact.'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release:
@@ -24,6 +29,10 @@ jobs:
 
     env:
       PYTHONIOENCODING: 'UTF-8'
+      # Pinned rather than @master: the launcher cache below relies on the action skipping its build when it finds a
+      # launcher already in its build folder, so that behaviour should not change under us. Bump it here and in the
+      # Build step together.
+      PYAPPIFY_ACTION_SHA: 'a987e9ade9d7517f97b38636c0e07b44fd5ef379'
 
     steps:
       - name: Configure git
@@ -59,6 +68,17 @@ jobs:
             exit 1
           }
           $names = @($refs) -replace '^\S+\s+refs/tags/', '' -replace '\^\{\}$', ''
+          # A dry run rebuilds the newest tag already on origin, so there is nothing to settle or check.
+          if ("${{ inputs.dry_run }}" -eq 'true') {
+            $tag = $names | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { Get-VersionKey $_ } -Unique | Select-Object -Last 1
+            if (-not $tag) {
+              Write-Error "origin has no version tag to rebuild."
+              exit 1
+            }
+            "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "Dry run: rebuilding $tag without tagging or releasing"
+            exit 0
+          }
           $version = "${{ inputs.version }}".Trim()
           if (-not $version) {
             $date = (Get-Date).ToUniversalTime().ToString('yyyy.MMdd')
@@ -85,6 +105,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          # Keeps the wheels pip builds from sdists (pyautogui and friends), most of what this install spent its time on.
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -127,6 +150,7 @@ jobs:
       # is where the clone pyappify seeds the installer from will look for it.
       - name: Create and push the tag
         id: push_tag
+        if: ${{ !inputs.dry_run }}
         shell: pwsh
         run: |
           $subject = (git log -1 --pretty=%s).Trim()
@@ -143,8 +167,63 @@ jobs:
         run: |
           python -m ok.update.inline_ok_requirements --tag ${{ env.TAG }}
 
+      # Follows PyAppify's newest release, as the action does on its own, but named here so it can key the cache.
+      - name: Resolve the PyAppify version
+        shell: pwsh
+        run: |
+          $refs = git ls-remote --tags --refs https://github.com/ok-oldking/pyappify.git 'v*'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "git ls-remote failed, cannot read PyAppify's tags."
+            exit 1
+          }
+          $version = @($refs) -replace '^\S+\s+refs/tags/', '' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.TrimStart('v') } | Select-Object -Last 1
+          if (-not $version) {
+            Write-Error "PyAppify has no version tag."
+            exit 1
+          }
+          "PYAPPIFY_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building with PyAppify $version"
+
+      # Compiling the launcher was 11 of the run's 22 minutes, and it comes out the same every time. The action skips
+      # the clone, pnpm and the whole Rust build when its build folder already holds the launcher, so that folder is
+      # cached. The key is everything baked into the launcher: PyAppify's version, the action, pyappify.yml and the
+      # icons. Left out are the compile leftovers (GBs), node_modules (pnpm links it into a store that is not cached),
+      # pip's download cache, and what bundling stages or produces.
+      - name: Restore the launcher build
+        id: launcher
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/p
+            !${{ runner.temp }}/p/node_modules
+            !${{ runner.temp }}/p/cache
+            !${{ runner.temp }}/p/src-tauri/data
+            !${{ runner.temp }}/p/src-tauri/target/release/deps
+            !${{ runner.temp }}/p/src-tauri/target/release/build
+            !${{ runner.temp }}/p/src-tauri/target/release/.fingerprint
+            !${{ runner.temp }}/p/src-tauri/target/release/incremental
+            !${{ runner.temp }}/p/src-tauri/target/release/bundle
+            !${{ runner.temp }}/p/src-tauri/target/release/nsis
+          key: pyappify-launcher-${{ env.PYAPPIFY_VERSION }}-${{ env.PYAPPIFY_ACTION_SHA }}-${{ hashFiles('pyappify.yml', 'icons/**', 'icon.ico') }}
+
+      # The action sets pnpm up only when it builds the launcher, but bundling the installers runs the Tauri CLI
+      # through pnpm either way. Installed the same way the action does it.
+      - name: Set up pnpm for the cached launcher
+        if: steps.launcher.outputs.cache-hit == 'true'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/p
+        run: |
+          npm install -g pnpm
+          pnpm install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build
-        uses: ok-oldking/pyappify-action@master
+        # Keep in step with PYAPPIFY_ACTION_SHA above.
+        uses: ok-oldking/pyappify-action@a987e9ade9d7517f97b38636c0e07b44fd5ef379
+        with:
+          version: ${{ env.PYAPPIFY_VERSION }}
+          app_version: ${{ env.TAG }}
 
       - name: Add version to build filenames
         shell: pwsh
@@ -154,7 +233,16 @@ jobs:
           }
           Get-ChildItem -Path pyappify_dist
 
+      - name: Keep the dry run's installers
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ env.TAG }}
+          path: pyappify_dist/**
+          retention-days: 3
+
       - name: Release
+        if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
