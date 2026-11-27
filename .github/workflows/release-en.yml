@@ -178,21 +178,22 @@ jobs:
         shell: pwsh
         run: |
           $name = (Select-String -LiteralPath pyappify.yml -Pattern '^name:\s*"?([^"\s]+)"?').Matches[0].Groups[1].Value
-          $key = @(
-            "pyappify $env:PYAPPIFY_VERSION"
-            "action $env:PYAPPIFY_ACTION_SHA"
-            foreach ($path in 'pyappify.yml', 'icons', 'icon.ico') { "$path $(git rev-parse "HEAD:$path")" }
-          ) -join "`n"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Could not read the launcher's inputs from the checkout."
-            exit 1
+          $lines = @("pyappify $env:PYAPPIFY_VERSION", "action $env:PYAPPIFY_ACTION_SHA")
+          foreach ($path in 'pyappify.yml', 'icons', 'icon.ico') {
+            $hash = git rev-parse "HEAD:$path"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Could not read $path from the checkout."
+              exit 1
+            }
+            $lines += "$path $hash"
           }
+          $key = $lines -join "`n"
           [IO.File]::WriteAllText("$env:RUNNER_TEMP/launcher-key.txt", "$key`n")
           $committed = ''
           if (Test-Path -LiteralPath launcher/key.txt) { $committed = (Get-Content -LiteralPath launcher/key.txt -Raw).Replace("`r", '').Trim() }
           $reuse = ($committed -eq $key) -and (Test-Path -LiteralPath "launcher/$name.exe")
           "APP_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "LAUNCHER_COMMITTED=$($reuse.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "REUSE_LAUNCHER=$(if ($reuse) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           if ($reuse) {
             Write-Host "Reusing the committed launcher, built from:`n$key"
           } else {
@@ -208,10 +209,11 @@ jobs:
           version: 12
 
       # What the action does before compiling, which it skips when it finds a launcher: clone PyAppify, copy in
-      # pyappify.yml and the icons, and put the app's name into its configs. tauri.conf.json goes through the action's
-      # own helper so it matches. The build.rs UAC edit only matters to the compile, so it is left out.
+      # pyappify.yml and the icons, put the app's name into its configs, and let pnpm run esbuild's install script.
+      # tauri.conf.json goes through the action's own helper so it matches. The build.rs UAC edit only matters to the
+      # compile, so it is left out. Re-read the action's prep (index.js, "Reading and preparing build") on a bump.
       - name: Lay out the build folder around the committed launcher
-        if: env.LAUNCHER_COMMITTED == 'true'
+        if: env.REUSE_LAUNCHER == 'true'
         shell: node {0}
         run: |
           const { execFileSync } = require('child_process');
@@ -242,7 +244,7 @@ jobs:
           console.log(`Placed launcher/${exe} in a PyAppify ${version} build folder at ${buildDir}`);
 
       - name: Install PyAppify's build tools
-        if: env.LAUNCHER_COMMITTED == 'true'
+        if: env.REUSE_LAUNCHER == 'true'
         working-directory: ${{ runner.temp }}/p
         run: pnpm install
 
@@ -289,7 +291,7 @@ jobs:
       # A launcher this run built goes back to the branch the run came from, so the next run reuses it. The release is
       # already out by now, so a failure here only warns rather than failing the run and pointing at the tag.
       - name: Commit the new launcher
-        if: env.LAUNCHER_COMMITTED == 'false' && github.ref_type == 'branch'
+        if: env.REUSE_LAUNCHER == 'false' && github.ref_type == 'branch'
         shell: pwsh
         run: |
           $branch = '${{ github.ref_name }}'
