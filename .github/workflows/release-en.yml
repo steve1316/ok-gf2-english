@@ -184,29 +184,16 @@ jobs:
           }
           "PYAPPIFY_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Building with PyAppify $version"
-          # The action's build folder, in forward slashes. The cache's exclude patterns are globs, and the backslashes
-          # in runner.temp made every one of them miss, so the first cache held all 1 GB of compile leftovers.
-          "LAUNCHER_DIR=$($env:RUNNER_TEMP.Replace('\', '/'))/p" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Compiling the launcher was 11 of the run's 22 minutes, and it comes out the same every time. The action skips
       # the clone, pnpm and the whole Rust build when its build folder already holds the launcher, so that folder is
       # cached. The key is everything baked into the launcher: PyAppify's version, the action, pyappify.yml and the
-      # icons. Left out are the compile leftovers (GBs), pip's download cache, and what bundling stages or produces.
-      # node_modules stays in, so a cache hit needs no pnpm install.
+      # icons. node_modules is kept, so a cache hit needs no pnpm install. The leftovers are pruned after the build.
       - name: Restore the launcher build
         id: launcher
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.LAUNCHER_DIR }}
-            !${{ env.LAUNCHER_DIR }}/cache
-            !${{ env.LAUNCHER_DIR }}/src-tauri/data
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/deps
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/build
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/.fingerprint
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/incremental
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/bundle
-            !${{ env.LAUNCHER_DIR }}/src-tauri/target/release/nsis
+          path: ${{ runner.temp }}/p
           key: pyappify-launcher-${{ env.PYAPPIFY_VERSION }}-${{ env.PYAPPIFY_ACTION_SHA }}-${{ hashFiles('pyappify.yml', 'icons/**', 'icon.ico') }}
 
       # The action sets pnpm up only when it builds the launcher, but bundling the installers runs the Tauri CLI
@@ -223,6 +210,25 @@ jobs:
         with:
           version: ${{ env.PYAPPIFY_VERSION }}
           app_version: ${{ env.TAG }}
+
+      # The cache is saved when the job ends, so the build folder is pruned first. Exclude patterns on the cache step
+      # never matched under Windows paths, and the cache held 1 GB of compile leftovers the launcher does not need.
+      - name: Prune the launcher build before it is cached
+        if: steps.launcher.outputs.cache-hit != 'true'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/p
+        run: |
+          $leftovers = 'cache', 'src-tauri/data', 'src-tauri/target/release/deps', 'src-tauri/target/release/build',
+            'src-tauri/target/release/.fingerprint', 'src-tauri/target/release/incremental',
+            'src-tauri/target/release/bundle', 'src-tauri/target/release/nsis'
+          foreach ($path in $leftovers) {
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $bytes = (Get-ChildItem -LiteralPath $path -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+            Remove-Item -LiteralPath $path -Recurse -Force
+            Write-Host ("Pruned {0}: {1:N0} MB" -f $path, ($bytes / 1MB))
+          }
+          $kept = (Get-ChildItem -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("Caching {0:N0} MB" -f ($kept / 1MB))
 
       - name: Add version to build filenames
         shell: pwsh
